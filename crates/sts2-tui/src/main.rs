@@ -1,5 +1,5 @@
 //! sts2-tui: 终端界面（见 PLAN.md §5.6）。
-//! P0 仅提供可编译入口；P6 实现建议/进度/打断/历史/设置/用量面板。
+//! P4 阶段提供 `--decide --mock` 可运行入口；P6 实现完整 ratatui 界面。
 
 #![forbid(unsafe_code)]
 
@@ -11,10 +11,17 @@ struct Cli {
     /// 跳过 UI，仅校验配置与依赖是否就绪。
     #[arg(long)]
     check: bool,
+    /// 执行一次 LLM 决策（取状态 → 调 LLM → 打印建议）。
+    #[arg(long)]
+    decide: bool,
+    /// --decide 时使用 Mock MCP server（而非 config 里的真实 server）。
+    #[arg(long)]
+    mock: bool,
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
     if cli.check {
         let cfg = sts2_agent::load_config();
         match cfg {
@@ -30,8 +37,18 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+    } else if cli.decide {
+        let cfg = sts2_agent::load_config()?;
+        if cfg.model.api_key.is_empty() {
+            eprintln!(
+                "未配置 API key。请在 config/.env 设置 STS2_OPENAI_API_KEY 或在 config.toml 填写。"
+            );
+            std::process::exit(1);
+        }
+        tokio::runtime::Runtime::new()?
+            .block_on(async { sts2_agent::decide::run_decide(&cfg, cli.mock).await })
     } else {
-        eprintln!("sts2-tui: UI 尚未实现（P6）；可用 --check 校验配置。");
+        eprintln!("sts2-tui: UI 尚未实现（P6）。可用 --check 校验配置，或 --decide [--mock] 执行一次 LLM 决策。");
         Ok(())
     }
 }

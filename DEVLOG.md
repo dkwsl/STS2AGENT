@@ -78,7 +78,84 @@ cargo run -p sts2-tui -- --check           # 校验本地配置
 
 ---
 
+## P2 sts2-mcp MCP 客户端 + Mock server（已完成）
+
+### 步骤 1：MCP 客户端（`client.rs`）
+- `McpClient`：以 tokio 子进程拉起 MCP server（真实 Python 或 Rust Mock），通过 stdio JSON-RPC 2.0 通信。
+- 实现 MCP 协议子集：`initialize` → `notifications/initialized` → `tools/list` → `tools/call`。
+- `read_response` 逐行读取，跳过通知（无 id），按 id 匹配响应。
+- 便捷方法：`get_game_state(format)` 返回状态 JSON 字符串；`call_tool(name, args)` 通用工具调用；`shutdown()` 终止子进程。
+- `Drop` 自动 `start_kill` 防泄漏。
+
+### 步骤 2：Mock 游戏状态机（`mock.rs`）
+- `MockGame`：与真实 STS2MCP 契约同构的 Rust MCP server，脚本化战斗序列。
+  - 流程：Map → choose_node(0) → Combat（Jaw Worm 12HP）→ 2× Strike 杀敌 → Rewards → proceed → Map。
+  - 出牌结算（Strike 伤 6 / Defend 防 5）、能量管理、手牌索引左移、end_turn 敌方攻击 + 新回合。
+  - `get_game_state(format="json")` 返回可被 `sts2-core::GameState` 反序列化的完整 JSON；`format="markdown"` 返回摘要。
+- 暴露 11 个工具（get_game_state/combat_play_card/combat_end_turn/map_choose_node/rewards_claim/proceed_to_map/…），未实现的工具返回 isError。
+- 单元测试 `full_combat_scenario` 覆盖完整流程。
+
+### 步骤 3：Mock 二进制（`src/bin/sts2-mcp-mock.rs`）
+- 同步 stdio 循环：逐行读 stdin JSON-RPC → `MockGame::handle_message` → 逐行写 stdout 响应。
+- 通知（无 id）不回复。可独立运行：`echo '{"jsonrpc":...}' | ./target/debug/sts2-mcp-mock`。
+
+### 步骤 4：集成测试（`tests/integration.rs`）
+- `mock_full_flow`：拉起 Mock 二进制 → McpClient 握手 → get_game_state 反序列化为 GameState → 断言 Map → choose_node → 断言 Monster/enemy 12HP → play_card → 断言 enemy 6HP → play_card → 断言 Rewards → claim gold → proceed → 断言回到 Map。
+- `CARGO_BIN_EXE_*` 在运行时不可用，改用 `option_env!`（编译期）+ `CARGO_MANIFEST_DIR` 路径回退。
+
+### 步骤 5：验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（sts2-core 7 + sts2-mcp 2 = 9 passed）。
+- 手动验证：`echo initialize | ./target/debug/sts2-mcp-mock` 正确返回 JSON-RPC 响应。
+- Mock 配置切换：`config.toml` 中 `[mcp] command = "./target/debug/sts2-mcp-mock"` 即可从真实 Python server 切到 Mock。
+
+---
+
 ## 待你确认/配合的事项
 
 - 暂无阻塞项。后续 P4（LLM 客户端）需要真实 API key，届时请通过 `config/.env`（`STS2_OPENAI_API_KEY=...`）或 `secret/` 提供——**不要**直接贴在对话里，也勿写入会被提交的文件。
-- 下一步可进入 **P2：sts2-mcp MCP 客户端 + Mock server**（stdio 拉起 Python MCP server，实现 initialize/tools-list/tools-call 子集，按 §9 取状态/发动作；Mock 同构）。是否继续？是否需要我把 P0+P1 一并 commit 推送到 GitHub？
+- 下一步可进入 **P5：完整编排**（会话/历史、CancellationToken 打断、多轮循环、LLM 输出解析为 Action 并执行）。是否需要把 P0–P4 commit 推送到 GitHub？
+
+---
+
+## P4 LLM 客户端 + LLM 决策接线（已完成）
+
+### 步骤 1：sts2-llm LLM 客户端
+- `types.rs`：`ChatMessage`（system/user/assistant 构造器）、`Usage`（prompt/completion tokens + cost 换算）、`ChatResponse`（content + reasoning + usage）、`StreamEvent`（Delta/Reasoning/Usage/Done/Error）。
+- `client.rs`：`LlmClient`（OpenAI 兼容 `/chat/completions`，reqwest + rustls）。
+  - `chat()`：非流式，提取 content + reasoning_content/reasoning + usage。
+  - `chat_stream()`：流式 SSE，后台 tokio task 逐行解析 `data: ` 行，推送 `Delta`/`Reasoning`/`Usage`/`Done`/`Error` 到 `UnboundedReceiver`；`stream_options.include_usage` 取最终用量。
+  - `from_config(&ModelConfig)` 从配置构造。
+- `budget.rs`：`BudgetGuard` 累计 token/成本，`is_over_budget()` 超 token 或成本限额即返回 true（R6）。
+- 单测 4 个：cost 计算、预算累计、成本限额、无限额——全绿。
+
+### 步骤 2：决策接线（sts2-agent `decide.rs` + sts2-tui CLI）
+- `decide.rs`：`run_decide(config, use_mock)` 编排：
+  1. 拉起 MCP server（Mock 或真实，由 `--mock` 决定）
+  2. `get_game_state(format="json")` 取状态
+  3. 构造 system prompt（STS2 动作规则 + 格式要求）+ user message（状态 JSON）
+  4. `LlmClient::chat_stream()` 流式输出决策到 stdout，思考到 stderr
+  5. `BudgetGuard` 记录用量并打印成本
+- `sts2-tui` CLI 新增 `--decide`（执行一次决策）和 `--mock`（用 Mock MCP）。
+- 无 API key 时优雅报错，不 panic。
+
+### 步骤 3：验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（13 passed：core 7 + llm 4 + mcp 2）。
+- `cargo run -p sts2-tui -- --decide --mock` 正确识别无 key 并报错（不 crash）。
+- Mock 二进制 `./target/debug/sts2-mcp-mock` 就位可被 spawn。
+
+### 第一个可运行成果
+配置 API key 后即可跑通完整链路：
+```bash
+# 1. 在 config/.env 填写 key（不入库）
+echo 'STS2_OPENAI_API_KEY=sk-...' > config/.env
+# 2. 运行（Mock 状态 → LLM 流式决策 → 终端输出）
+cargo run -p sts2-tui -- --decide --mock
+```
+输出：LLM 给出 `ACTION: ... | ...` + `REASON: ...`，并打印 token 用量与成本。
+
+---
+
+## 待你确认/配合的事项
+
+- **需要你配置 API key** 才能看到 LLM 决策实跑。请通过 `config/.env`（`STS2_OPENAI_API_KEY=sk-...`）或 `secret/` 提供——**不要**直接贴在对话里。config.toml 里可改 endpoint/model/price 切换供应商。
+- 下一步可进入 **P5：完整编排**（会话/历史、CancellationToken 打断、多轮循环、LLM 输出解析为 Action 并执行）。是否需要把 P0–P4 commit 推送到 GitHub？

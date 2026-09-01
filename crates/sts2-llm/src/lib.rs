@@ -4,3 +4,11 @@
 //! 预算守卫、思考模式（DeepSeek `reasoning_content` / OpenAI 推理模型）。
 
 #![forbid(unsafe_code)]
+
+pub mod budget;
+pub mod client;
+pub mod types;
+
+pub use budget::BudgetGuard;
+pub use client::LlmClient;
+pub use types::{ChatMessage, ChatResponse, StreamEvent, Usage};

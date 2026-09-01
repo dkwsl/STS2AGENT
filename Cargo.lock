@@ -1390,6 +1390,7 @@ name = "sts2-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",
@@ -1403,6 +1404,7 @@ name = "sts2-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
  "serde_json",
  "sts2-core",
  "tokio",

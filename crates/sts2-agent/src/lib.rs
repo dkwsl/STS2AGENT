@@ -1,9 +1,11 @@
 //! sts2-agent: 编排主控（见 PLAN.md §5.5 / §6）。
 //!
-//! 主循环：取状态(MCP) → 决策(DecisionEngine) → 拼 prompt → LLM(流式) → 产出解释。
+//! 主循环：取状态(MCP) → 决策(DecisionEngine/LLM) → 拼 prompt → LLM(流式) → 产出解释。
 //! 负责：会话/历史、预算累计与自动中断、CancellationToken 打断、进度事件总线。
 
 #![forbid(unsafe_code)]
+
+pub mod decide;
 
 use sts2_core::Config;
 

@@ -5,3 +5,9 @@
 //! Mock：同构 Rust MCP server，提供脚本化战斗序列用于无游戏演示。
 
 #![forbid(unsafe_code)]
+
+pub mod client;
+pub mod mock;
+
+pub use client::McpClient;
+pub use mock::MockGame;
