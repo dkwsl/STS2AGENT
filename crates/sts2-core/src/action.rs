@@ -1,5 +1,6 @@
-//! 行动类型，对齐 STS2MCP 动作工具入参（见 PLAN.md §9.3）。
-//! `Action` 以 `#[serde(tag = "action")]` 序列化，可直接作为 MCP/HTTP 动作请求体。
+//! 行动类型，对齐 `STS2MCP` 动作工具入参（见 PLAN.md §9.3）。
+//! `Action` 以 `#[serde(tag = "action")]` 序列化，可直接作为 MCP/HTTP 动作请求体，
+//! 也可作为会话历史里的决策记录。
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,18 @@ pub enum Action {
     DiscardPotion {
         slot: u32,
     },
+    CombatSelectCard {
+        card_index: u32,
+    },
+    CombatConfirmSelection,
+    ClaimReward {
+        index: u32,
+    },
+    SelectCardReward {
+        card_index: u32,
+    },
+    SkipCardReward,
+    Proceed,
     ChooseMapNode {
         index: u32,
     },
@@ -33,19 +46,31 @@ pub enum Action {
     ShopPurchase {
         index: u32,
     },
-    ClaimReward {
+    SelectCard {
         index: u32,
     },
-    SelectCardReward {
-        card_index: u32,
-    },
-    SkipCardReward,
-    Proceed,
-    DeckSelectCard {
+    ConfirmSelection,
+    CancelSelection,
+    SelectBundle {
         index: u32,
     },
-    DeckConfirmSelection,
-    DeckCancelSelection,
+    ConfirmBundleSelection,
+    CancelBundleSelection,
+    SelectRelic {
+        index: u32,
+    },
+    SkipRelicSelection,
+    ClaimTreasureRelic {
+        index: u32,
+    },
+    CrystalSphereSetTool {
+        tool: String,
+    },
+    CrystalSphereClickCell {
+        x: i32,
+        y: i32,
+    },
+    CrystalSphereProceed,
     MenuSelect {
         option: String,
         #[serde(skip_serializing_if = "Option::is_none")]

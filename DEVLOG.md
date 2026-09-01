@@ -48,7 +48,37 @@ cargo run -p sts2-tui -- --check           # 校验本地配置
 
 ---
 
+## P1 sts2-core 完整类型 + serde 往返单测（已完成）
+
+### 步骤 1：拆分模块
+- `sts2-core/src` 由单 `state.rs` 拆为：`state.rs`（顶层 GameState/StateType/RunInfo/Player）、`combat.rs`（Battle/Enemy/Intent/Card/PileCard/Power/Keyword/Orb/Relic/Potion/Pet/Turn）、`screens.rs`（各 state_type 负载：HandSelect/Rewards/CardReward/MapState/Event/RestSite/Shop/FakeMerchant/Treasure/CardSelect/BundleSelect/RelicSelect/CrystalSphere/GameOver/Overlay 及子项）、`action.rs`/`config.rs`。
+- `lib.rs` 以 `pub mod` + `pub use *` 统一导出。
+
+### 步骤 2：按 raw-full.md 填全类型
+- `Player` 补齐战斗字段（energy/max_energy/stars/hand/piles/orbs/orb_slots/pets/status/relics/potions/max_potion_slots），战斗字段全 `Option`+`#[serde(default)]`。
+- `Card`/`PileCard`/`Power`/`Keyword`/`Enemy`/`Intent`/`Orb`/`Relic`/`Potion`/`Pet` 字段对齐上游命名；JSON `type` 关键字用 `#[serde(rename="type")] kind`。
+- `Action` 枚举补全 28 个动作（play_card/end_turn/use_potion/.../menu_select），`#[serde(tag="action")]` 可直出请求体。
+- `Turn` 用 `#[serde(other)] Unknown` 兜底未知值；`StateType` 同样 `#[serde(other)] Unknown`。
+- 设计原则贯穿：每个聚合根用 `#[serde(flatten)] extra: serde_json::Value` 兜底未识别字段（宽进严出），供 LLM 上下文与调试。
+
+### 步骤 3：serde 往返单测
+- 新增 `crates/sts2-core/tests/serde_roundtrip.rs`（7 测试，全绿）：
+  - `parse_combat_state`：战斗样本断言 entity_id/intent/energy/hand/relic.counter=null/potion.slot/未识别字段进 extra。
+  - `roundtrip_combat_state`：序列化→反序列化关键字段不丢、extra 保留。
+  - `parse_menu_state`：菜单态、options 异构数组、run/player 缺失。
+  - `unknown_state_type_falls_back`：未知 state_type → Unknown。
+  - `state_type_serde_variants`：monster/boss/weird 映射。
+  - `action_serializes_to_request_body`：PlayCard→`{"action":"play_card",...}`；UsePotion 无 target 时省略字段；EndTurn→`{"action":"end_turn"}`。
+  - `action_roundtrip`：5 个 Action 往返相等。
+- 为集成测试在 `sts2-core/Cargo.toml` 加 `[dev-dependencies] serde_json`。
+
+### 步骤 4：验证
+- `cargo fmt --check` ✅、`cargo build -p sts2-core` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（sts2-core 7 passed，其余 0 失败）。
+- 全程未操作仓库外文件；未引入新依赖（仅复用 workspace 内 serde/serde_json/thiserror）。
+
+---
+
 ## 待你确认/配合的事项
 
 - 暂无阻塞项。后续 P4（LLM 客户端）需要真实 API key，届时请通过 `config/.env`（`STS2_OPENAI_API_KEY=...`）或 `secret/` 提供——**不要**直接贴在对话里，也勿写入会被提交的文件。
-- 下一步可进入 **P1：sts2-core 完整类型**（按 `STS2MCP/docs/raw-full.md` 填全 Player/Card/Enemy/Intent/Power/Orb/Relic/Potion/Battle 及各 state_type 负载 + serde 往返单测）。是否继续？
+- 下一步可进入 **P2：sts2-mcp MCP 客户端 + Mock server**（stdio 拉起 Python MCP server，实现 initialize/tools-list/tools-call 子集，按 §9 取状态/发动作；Mock 同构）。是否继续？是否需要我把 P0+P1 一并 commit 推送到 GitHub？

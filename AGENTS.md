@@ -77,6 +77,7 @@ R6. Token 用量与价格统计
 ## 4. 开发约定
 
 - 核心逻辑用 Rust（R1），Cargo workspace 多 crate；主控流程在 `sts2-agent`。
+- 禁用 `unsafe` 等不安全语法（每个 crate 根以 `#![forbid(unsafe_code)]` 强制；如确需绕过须先与用户确认）。
 - 配置经 `config.toml` + `.env` 加载；密钥仅放 `secret/` 或环境变量，禁入 git（呼应 §2）。
 - 日志仅落 `data/logs/`，对 `api_key` 等脱敏。
 - 不提交 `secret/`、`.env`、`data/`、`target/`、用户覆盖配置等（见 `.gitignore`）。
