@@ -1,0 +1,9 @@
+[package]
+name = "sts2-decision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sts2-core = { workspace = true }
+serde = { workspace = true }

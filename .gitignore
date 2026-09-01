@@ -1,0 +1,22 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Secrets & local env (never commit)
+/secret/
+.env
+config/.env
+*.pem
+*.key
+
+# Runtime data (sessions, logs, caches)
+/data/
+
+# User config overrides (templates are committed: config.example.toml, .env.example)
+config/config.toml
+config/local.toml
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

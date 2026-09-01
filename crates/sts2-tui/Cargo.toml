@@ -1,0 +1,19 @@
+[package]
+name = "sts2-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sts2-tui"
+path = "src/main.rs"
+
+[dependencies]
+sts2-agent = { workspace = true }
+sts2-core = { workspace = true }
+tokio = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }

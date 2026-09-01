@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sts2-core",
+    "crates/sts2-mcp",
+    "crates/sts2-decision",
+    "crates/sts2-llm",
+    "crates/sts2-agent",
+    "crates/sts2-tui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
+ratatui = "0.29"
+crossterm = "0.28"
+toml = "0.8"
+dotenvy = "0.15"
+clap = { version = "4", features = ["derive"] }
+
+# 内部 crate
+sts2-core = { path = "crates/sts2-core" }
+sts2-mcp = { path = "crates/sts2-mcp" }
+sts2-decision = { path = "crates/sts2-decision" }
+sts2-llm = { path = "crates/sts2-llm" }
+sts2-agent = { path = "crates/sts2-agent" }
+
+[profile.release]
+lto = true
+codegen-units = 1
