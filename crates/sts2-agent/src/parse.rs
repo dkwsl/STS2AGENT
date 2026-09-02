@@ -44,6 +44,7 @@ pub fn parse_action(text: &str) -> Result<ParsedAction> {
             }
         }
     }
+    normalize_args(&tool, &mut args);
 
     Ok(ParsedAction {
         tool,
@@ -51,21 +52,69 @@ pub fn parse_action(text: &str) -> Result<ParsedAction> {
     })
 }
 
-/// 工具名归一化（处理 LLM 可能用的别名）。
+/// 参数名归一化：HTTP 动作用 `index`，MCP 工具用各自的具体参数名。
+fn normalize_args(tool: &str, args: &mut serde_json::Map<String, Value>) {
+    if let Some(v) = args.remove("index") {
+        let new_key = match tool {
+            "rewards_claim" => "reward_index",
+            "map_choose_node" => "node_index",
+            "event_choose_option" | "rest_choose_option" => "option_index",
+            "shop_purchase" => "item_index",
+            "relic_select" | "treasure_claim_relic" => "relic_index",
+            "bundle_select" => "bundle_index",
+            _ => "index",
+        };
+        args.insert(new_key.to_string(), v);
+    }
+}
+
+/// 工具名归一化：把 HTTP 动作名/别名统一映射为 MCP 工具名。
 fn normalize_tool(name: &str) -> String {
     match name.to_lowercase().as_str() {
-        "end_turn" | "endturn" => "combat_end_turn".into(),
-        "play_card" | "playcard" => "combat_play_card".into(),
-        "choose_map_node" | "map_node" => "map_choose_node".into(),
-        "claim_reward" | "claim" => "rewards_claim".into(),
+        // 战斗
+        "play_card" | "playcard" | "combat_play_card" => "combat_play_card".into(),
+        "end_turn" | "endturn" | "combat_end_turn" => "combat_end_turn".into(),
+        // 地图
+        "choose_map_node" | "map_node" | "map_choose_node" => "map_choose_node".into(),
+        // 奖励
+        "claim_reward" | "claim" | "rewards_claim" => "rewards_claim".into(),
         "proceed" | "proceed_to_map" => "proceed_to_map".into(),
-        "skip_card" | "skip" => "rewards_skip_card".into(),
-        "pick_card" | "pick" => "rewards_pick_card".into(),
-        "select_card" => "deck_select_card".into(),
-        "confirm" | "confirm_selection" => "deck_confirm_selection".into(),
-        "cancel" | "cancel_selection" => "deck_cancel_selection".into(),
-        "rest" | "rest_option" => "rest_choose_option".into(),
-        "shop_buy" | "buy" => "shop_purchase".into(),
+        "skip_card" | "skip_card_reward" | "rewards_skip_card" => "rewards_skip_card".into(),
+        "pick_card" | "pick" | "select_card_reward" | "rewards_pick_card" => {
+            "rewards_pick_card".into()
+        }
+        // 事件
+        "choose_event_option" | "event_option" | "event_choose_option" => {
+            "event_choose_option".into()
+        }
+        "advance_dialogue" | "event_advance_dialogue" => "event_advance_dialogue".into(),
+        // 休息
+        "rest" | "rest_option" | "choose_rest_option" | "rest_choose_option" => {
+            "rest_choose_option".into()
+        }
+        // 商店
+        "shop_buy" | "buy" | "shop_purchase" => "shop_purchase".into(),
+        // 卡牌选择
+        "select_card" | "deck_select_card" => "deck_select_card".into(),
+        "confirm" | "confirm_selection" | "deck_confirm_selection" => {
+            "deck_confirm_selection".into()
+        }
+        "cancel" | "cancel_selection" | "deck_cancel_selection" => "deck_cancel_selection".into(),
+        // 遗物
+        "select_relic" | "relic_select" => "relic_select".into(),
+        "skip_relic" | "skip_relic_selection" | "relic_skip" => "relic_skip".into(),
+        // 宝箱
+        "claim_treasure_relic" | "treasure_claim_relic" => "treasure_claim_relic".into(),
+        // Bundle
+        "select_bundle" | "bundle_select" => "bundle_select".into(),
+        "confirm_bundle" | "confirm_bundle_selection" | "bundle_confirm_selection" => {
+            "bundle_confirm_selection".into()
+        }
+        "cancel_bundle" | "cancel_bundle_selection" | "bundle_cancel_selection" => {
+            "bundle_cancel_selection".into()
+        }
+        // 菜单
+        "menu_select" => "menu_select".into(),
         other => other.to_string(),
     }
 }
@@ -114,6 +163,40 @@ mod tests {
         assert_eq!(normalize_tool("play_card"), "combat_play_card");
         assert_eq!(normalize_tool("proceed"), "proceed_to_map");
         assert_eq!(normalize_tool("buy"), "shop_purchase");
+        // HTTP 动作名 → MCP 工具名（本次补全的关键映射）
+        assert_eq!(normalize_tool("choose_event_option"), "event_choose_option");
+        assert_eq!(normalize_tool("advance_dialogue"), "event_advance_dialogue");
+        assert_eq!(normalize_tool("choose_rest_option"), "rest_choose_option");
+        assert_eq!(normalize_tool("select_relic"), "relic_select");
+        assert_eq!(normalize_tool("skip_relic_selection"), "relic_skip");
+        assert_eq!(
+            normalize_tool("claim_treasure_relic"),
+            "treasure_claim_relic"
+        );
+        assert_eq!(normalize_tool("select_bundle"), "bundle_select");
+        assert_eq!(normalize_tool("select_card_reward"), "rewards_pick_card");
+        assert_eq!(normalize_tool("skip_card_reward"), "rewards_skip_card");
+    }
+
+    #[test]
+    fn param_index_normalization() {
+        // HTTP 动作风格: choose_event_option | index=0 → event_choose_option | option_index=0
+        let a = parse_action("ACTION: choose_event_option | index=0").unwrap();
+        assert_eq!(a.tool, "event_choose_option");
+        assert_eq!(a.args["option_index"], 0);
+        assert!(a.args.get("index").is_none());
+
+        // map_choose_node | index=2 → node_index=2
+        let a = parse_action("ACTION: map_choose_node | index=2").unwrap();
+        assert_eq!(a.args["node_index"], 2);
+
+        // rewards_claim | index=0 → reward_index=0
+        let a = parse_action("ACTION: rewards_claim | index=0").unwrap();
+        assert_eq!(a.args["reward_index"], 0);
+
+        // shop_purchase | index=5 → item_index=5
+        let a = parse_action("ACTION: shop_purchase | index=5").unwrap();
+        assert_eq!(a.args["item_index"], 5);
     }
 
     #[test]

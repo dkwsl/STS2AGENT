@@ -93,13 +93,19 @@ pub fn build_messages(
 3. 理解并执行玩家的自然语言指令（"先打小怪""去商店""用药水"等），把指令翻译成具体动作。
 4. 如果玩家否决了你的建议，理解原因并给出替代方案。
 
-游戏动作规则：
-- 战斗(monster/elite/boss): 出牌(combat_play_card, card_index + target) / 用药水(use_potion) / 结束回合(combat_end_turn)。从右到左出牌以保持索引稳定。单体牌需 target = 敌人 entity_id（如 JAW_WORM_0）。
-- 地图(map): 选择节点(map_choose_node, node_index)。
-- 奖励(rewards): 领取(rewards_claim, reward_index) 或 前往地图(proceed_to_map)。
-- 休息点(rest_site): 休息或锻造(rest_choose_option, option_index)。
-- 商店(shop): 购买(shop_purchase, item_index) 或 前往地图(proceed_to_map)。
-- 事件(event): 选择选项(choose_event_option, option_index)。
+游戏动作规则（工具名必须严格按以下拼写，参数名也要精确匹配）：
+- 战斗(monster/elite/boss): 出牌 combat_play_card(card_index, target) / 用药水 use_potion(slot, target) / 结束回合 combat_end_turn()。从右到左出牌以保持索引稳定。单体牌需 target = 敌人 entity_id（如 JAW_WORM_0）。
+- 战斗选牌(hand_select): 选牌 combat_select_card(card_index) / 确认 combat_confirm_selection()。
+- 地图(map): 选择节点 map_choose_node(node_index)。
+- 奖励(rewards): 领取 rewards_claim(reward_index) / 去地图 proceed_to_map()。
+- 卡牌奖励(card_reward): 选卡 rewards_pick_card(card_index) / 跳过 rewards_skip_card()。
+- 休息点(rest_site): 选择 rest_choose_option(option_index) / 去地图 proceed_to_map()。
+- 商店(shop/fake_merchant): 购买 shop_purchase(item_index) / 去地图 proceed_to_map()。
+- 事件(event): 选择 event_choose_option(option_index) / 推进对话 event_advance_dialogue()。
+- 卡牌选择(card_select): 选牌 deck_select_card(card_index) / 确认 deck_confirm_selection() / 取消 deck_cancel_selection()。
+- 遗物选择(relic_select): 选遗物 relic_select(relic_index) / 跳过 relic_skip()。
+- 宝箱(treasure): 领取 treasure_claim_relic(relic_index) / 去地图 proceed_to_map()。
+- 菜单/游戏结束(menu/game_over): menu_select(option)。
 
 回复格式要求：
 - 先用自然语言与玩家对话、解释你的分析。
