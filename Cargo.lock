@@ -1419,9 +1419,13 @@ dependencies = [
  "clap",
  "crossterm",
  "ratatui",
+ "serde_json",
  "sts2-agent",
  "sts2-core",
+ "sts2-llm",
+ "sts2-mcp",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

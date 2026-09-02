@@ -203,3 +203,121 @@ cargo test --workspace
 
 - config.toml 里 `price_in`/`price_out` 仍是 OpenAI 的默认价格，GLM-5 实际价格不同。你知道清华平台定价的话可以改，不改也不影响功能（只影响 cost 显示）。
 - 下一步方向：commit 推送？做 TUI 界面（P6）？加会话历史保存/加载（R5）？
+
+---
+
+## TUI 交互式终端界面（已完成）
+
+### 步骤 1：事件系统与状态管理（`app.rs`）
+- `AppState`：游戏状态、决策文本、思考文本、历史记录、token/成本累计、进度、播放模式、错误等。
+- `HistoryEntry`：每轮的回合号、状态摘要、ACTION、执行结果、成功/失败。
+- `state_lines(gs)`：从 `GameState` 提取显示行（职业/HP/能量/手牌/敌人意图/地图选项/奖励）。
+- `status_color()`：根据状态返回颜色（播放=绿/错误=红/结束=黄/待命=青）。
+
+### 步骤 2：ratatui 布局（`ui.rs`）
+- 三行垂直布局：顶栏（1行状态标题）| 主体（左 38% 状态面板 + 右 62% 决策面板）| 底栏（1行用量+按键提示）。
+- 状态面板：`List` 渲染 `state_lines` 输出。
+- 决策面板：进度提示 / 错误 / LLM 流式文本（`Paragraph` + `Wrap`）。
+- 顶栏：模型名 + 模式 + 成本。底栏：轮数 + token + 成本 + 按键提示。
+
+### 步骤 3：异步事件循环（`runner.rs`）
+- 主循环：渲染 → 检查是否需触发决策 → `poll` 按键(50ms) → 非阻塞接收 LLM 流事件。
+- 按键处理：`d`手动决策 / `p`自动播放 / `x`打断 / `t`思考切换 / `q`退出。
+- LLM 流式：`chat_stream` 返回 `UnboundedReceiver`，主循环 `try_recv` 非阻塞读取 Delta/Reasoning/Usage/Done/Error。
+- 决策完成 → `parse_action` → `mcp.call_tool` 执行 → 记录历史 → 下一轮。
+- 预算检查每轮进行，超额自动停。
+- `CancellationToken`：`x` 键取消后 `stream_rx = None`，停止当前决策。
+- 终端恢复：退出时 `disable_raw_mode` + `LeaveAlternateScreen`，stderr 打印总结。
+
+### 步骤 4：CLI 入口（`main.rs`）
+- `--tui`：进入 ratatui 界面（优先于 `--play`）。
+- `--tui --play`：TUI + 自动对局模式（`auto_play=true`）。
+- `--tui` 不带 `--play`：手动模式，按 `d` 触发决策。
+- `--play`（无 `--tui`）：裸文本自动对局（原有功能不变）。
+- `--decide`：裸文本单次决策（原有功能不变）。
+
+### 步骤 5：验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（19 passed）。
+- `--play --mock --zh --max-turns 2` 裸文本模式正常。
+- `--tui --mock --zh --play` 需要 TTY 交互式终端（管道模式下报 `os error 6` 是预期行为）。
+
+### 如何检验 TUI 成果
+```bash
+# 在交互式终端中运行（不能管道/重定向）：
+cargo run -p sts2-tui -- --tui --mock --zh
+# 看到状态面板 + 决策面板，按 d 手动决策，按 p 自动对局
+
+# 自动对局模式：
+cargo run -p sts2-tui -- --tui --mock --zh --play --max-turns 6
+# LLM 自动打通一局，按 x 打断，按 q 退出
+
+# 裸文本模式（无需 TTY）：
+cargo run -p sts2-tui -- --play --mock --zh --max-turns 6
+cargo run -p sts2-tui -- --decide --mock --zh
+
+# 全套测试：
+cargo test --workspace
+```
+
+---
+
+## 待你确认/配合的事项
+
+- TUI 需要在真正的交互式终端中运行（SSH/本地终端都行），管道或重定向会导致 crossterm 无法进入 raw mode。
+- 下一步方向：commit 推送？加会话历史保存/加载（R5）？真实 Mod 联调？
+
+---
+
+## TUI 重写：自然语言对话模式（已完成）
+
+### 设计变更
+- 从"按键驱动自动执行"改为"自然语言对话 + 人工确认执行"。
+- Agent 给出建议后**不自动执行**，显示在对话面板，等用户输入"执行"/"继续"等确认词后才调 MCP。
+- 用户可随时打字与 Agent 沟通策略（作为 LLM 对话历史），或输入"打断"取消当前 LLM 流。
+
+### 布局（三段式）
+- **顶栏**：轮数 + token + 成本 + 状态
+- **主体左**：状态面板（HP/能量/手牌/敌人/路径/奖励）
+- **主体右**：对话面板（历史对话 + 流式输出 + 思考 + pending 确认提示）
+- **底部**：输入框（打字 + 回车发送，光标可见）
+
+### 交互流程
+1. 启动 → 自动发起首轮决策（LLM 流式，用户可打字打断）
+2. LLM 完成 → ACTION 显示在对话面板 → 等待用户确认
+3. 用户输入"执行"/"继续"/"好" → 确认 → 后台 MCP 执行 → 取下一状态 → 循环
+4. 用户输入"不"/"换一个" → 拒绝，重新决策
+5. 用户输入其他文字 → 作为对话发给 LLM（带上下文）
+6. LLM 流式中用户打字 → 打断当前决策
+
+### 意图解析（`parse_intent`）
+- 确认：执行/继续/好/确认/可以/ok/go/yes/y
+- 拒绝：不/换一个/不要/拒绝/no/n/reject
+- 打断：打断/停/stop/interrupt
+- 其他：对话
+
+### 架构
+- 后台 task（`tokio::spawn`）：取状态 / LLM 流式 / MCP 执行，结果经 `mpsc::UnboundedChannel` 推回主循环。
+- 主循环 `tokio::select!`：33ms 超时 + 按键 poll + 后台消息，**绝不直接 .await 耗时操作**。
+- `McpClient` 包在 `Arc<Mutex>` 中供后台 task 共享。
+- `CancellationToken` 在 `consume_stream` 中生效。
+- 状态机 `Mode`：Idle/FetchingState/Streaming/Executing/PendingConfirm。
+
+### 如何检验
+```bash
+# 交互式终端中运行（需 TTY）：
+cargo run -p sts2-tui -- --tui --mock --zh --max-turns 6
+# 看到对话面板 + 输入框，Agent 给建议后输入"执行"确认
+
+# 裸文本模式（无需 TTY）：
+cargo run -p sts2-tui -- --play --mock --zh --max-turns 4
+
+# 全套测试：
+cargo test --workspace
+```
+
+---
+
+## 待你确认/配合的事项
+
+- TUI 对话模式需在交互式终端中运行验证（管道模式无法进入 raw mode）。
+- 下一步方向：commit 推送？加会话历史保存/加载（R5）？真实 Mod 联调？

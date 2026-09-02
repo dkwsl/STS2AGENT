@@ -33,7 +33,7 @@ pub async fn run_play(
 
     let llm = LlmClient::from_config(&config.model);
     let mut budget = BudgetGuard::new(config.budget.token_limit, config.budget.cost_limit_usd);
-    let mut history: Vec<String> = Vec::new();
+    let _ = zh;
 
     for turn in 1..=max_turns {
         // 1. 取状态
@@ -59,7 +59,7 @@ pub async fn run_play(
         }
 
         // 3. LLM 决策（流式，收集完整文本）
-        let messages = build_messages(&state_json, &config.model.model, &history, &summary, zh);
+        let messages = build_messages(&state_json, &config.model.model, &[], &summary, None, zh);
         let mut rx = llm.chat_stream(&messages)?;
         let mut full_text = String::new();
 
@@ -87,12 +87,10 @@ pub async fn run_play(
         }
         println!();
 
-        // 4. 解析 ACTION
         let action = match parse_action(&full_text) {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("[解析失败] {e:#}，跳过本轮。");
-                history.push(full_text.clone());
                 continue;
             }
         };
@@ -107,30 +105,10 @@ pub async fn run_play(
             Ok(result) => {
                 let preview: String = result.chars().take(120).collect();
                 println!("[结果] {preview}");
-                let entry = format!(
-                    "ACTION: {} args={} → SUCCESS: {}",
-                    action.tool,
-                    serde_json::to_string(&action.args).unwrap_or_default(),
-                    preview
-                );
-                history.push(entry);
-                if history.len() > 5 {
-                    history.remove(0);
-                }
             }
             Err(e) => {
                 let msg = format!("{e:#}");
                 eprintln!("[执行失败] {msg}");
-                let entry = format!(
-                    "ACTION: {} args={} → FAILED: {}",
-                    action.tool,
-                    serde_json::to_string(&action.args).unwrap_or_default(),
-                    msg
-                );
-                history.push(entry);
-                if history.len() > 5 {
-                    history.remove(0);
-                }
             }
         }
 

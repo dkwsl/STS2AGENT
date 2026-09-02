@@ -1,4 +1,8 @@
-//! LLM 决策编排：取游戏状态 → 构造 prompt → 调 LLM 流式生成 → 终端输出。
+//! LLM 对话编排：取游戏状态 → 构造 prompt → 调 LLM 流式生成 → 终端输出。
+//!
+//! LLM 角色 = 牌手顾问 + 对话伙伴（不是自动决策者）：
+//! - 理解用户要求、回答策略问题、解释出牌原因、分析不这样出的理由。
+//! - 末尾附 ACTION 建议供用户确认，但用户可以拒绝或另提方案。
 
 use anyhow::Result;
 use std::io::Write;
@@ -35,7 +39,7 @@ pub async fn run_decide(
     let llm = LlmClient::from_config(&config.model);
     let mut budget = BudgetGuard::new(config.budget.token_limit, config.budget.cost_limit_usd);
 
-    let messages = build_messages(&state_json, &config.model.model, &[], "", zh);
+    let messages = build_messages(&state_json, &config.model.model, &[], "", None, zh);
     let mut rx = llm.chat_stream(&messages)?;
 
     println!("--- LLM 决策 ---");
@@ -65,12 +69,15 @@ pub async fn run_decide(
     Ok(())
 }
 
-/// 构造 LLM 消息：system（规则）+ history（上轮摘要）+ user（当前状态）。
-pub(crate) fn build_messages(
+/// 构造 LLM 消息：system（角色+规则）+ history（对话历史）+ user（状态+用户消息）。
+///
+/// `user_msg` = 用户本轮输入的自然语言指令/问题（None = 首轮自动发起）。
+pub fn build_messages(
     state_json: &str,
     model: &str,
-    history: &[String],
+    history: &[ChatTurn],
     state_summary: &str,
+    user_msg: Option<&str>,
     zh: bool,
 ) -> Vec<ChatMessage> {
     let lang = if zh {
@@ -79,31 +86,62 @@ pub(crate) fn build_messages(
         ""
     };
     let system = ChatMessage::system(format!(
-        r#"You are an expert Slay the Spire 2 decision agent (model: {model}).
-Given the current game state JSON, decide the single best action to take now.
+        r#"你是《杀戮尖塔2》的牌手顾问和对话伙伴（模型: {model}）。
+你的职责是：
+1. 分析当前游戏状态，给出最优行动**建议**（不是命令）。
+2. 回答玩家关于策略的问题（"为什么打这张牌""不这样出会怎样"等）。
+3. 理解并执行玩家的自然语言指令（"先打小怪""去商店""用药水"等），把指令翻译成具体动作。
+4. 如果玩家否决了你的建议，理解原因并给出替代方案。
 
-Rules:
-- Combat (state_type monster/elite/boss): play a card (combat_play_card, card_index + target for single-target), use a potion (use_potion), or end the turn (combat_end_turn). Play cards right-to-left to keep indices stable. Single-target cards need target = enemy entity_id (e.g. JAW_WORM_0).
-- Map (state_type map): choose a node (map_choose_node, node_index).
-- Rewards: claim (rewards_claim, reward_index) or proceed (proceed_to_map).
-- Rest site: rest or smith (rest_choose_option, option_index).
-- Shop: buy (shop_purchase, item_index) or proceed (proceed_to_map).
-- Event: choose an option (choose_event_option, option_index).
+游戏动作规则：
+- 战斗(monster/elite/boss): 出牌(combat_play_card, card_index + target) / 用药水(use_potion) / 结束回合(combat_end_turn)。从右到左出牌以保持索引稳定。单体牌需 target = 敌人 entity_id（如 JAW_WORM_0）。
+- 地图(map): 选择节点(map_choose_node, node_index)。
+- 奖励(rewards): 领取(rewards_claim, reward_index) 或 前往地图(proceed_to_map)。
+- 休息点(rest_site): 休息或锻造(rest_choose_option, option_index)。
+- 商店(shop): 购买(shop_purchase, item_index) 或 前往地图(proceed_to_map)。
+- 事件(event): 选择选项(choose_event_option, option_index)。
 
-Respond in exactly this format:
-ACTION: <tool_name> | <param>=<value> | ...
-REASON: <one or two sentences>{lang}"#
+回复格式要求：
+- 先用自然语言与玩家对话、解释你的分析。
+- 如果有行动建议，在回复的**最后一行**写上 ACTION 行，格式如下：
+  ACTION: <tool_name> | <param>=<value> | ...
+- 如果玩家问的是纯策略问题且没有需要执行的即时动作，可以不附 ACTION 行。
+- ACTION 行只是**建议**，玩家会确认后才执行。{lang}"#
     ));
+
     let mut msgs = vec![system];
-    for h in history {
-        msgs.push(ChatMessage::assistant(h.clone()));
-        msgs.push(ChatMessage::user("What's the next action?"));
+
+    // 对话历史
+    for turn in history {
+        match turn {
+            ChatTurn::User(t) => msgs.push(ChatMessage::user(t.clone())),
+            ChatTurn::Assistant(t) => msgs.push(ChatMessage::assistant(t.clone())),
+        }
     }
-    let user_content = if state_summary.is_empty() {
-        format!("Current game state:\n```json\n{state_json}\n```\n\nWhat is the best action to take right now?")
-    } else {
-        format!("Current state: {state_summary}\n\nFull state JSON:\n```json\n{state_json}\n```\n\nWhat is the best action to take right now?")
+
+    // 当前状态 + 用户消息
+    let user_content = {
+        let state_part = if state_summary.is_empty() {
+            format!("当前游戏状态:\n```json\n{state_json}\n```")
+        } else {
+            format!("当前状态: {state_summary}\n\n完整状态 JSON:\n```json\n{state_json}\n```")
+        };
+        match user_msg {
+            Some(msg) if !msg.is_empty() => {
+                format!("{state_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果有行动建议，在最后一行附 ACTION。")
+            }
+            _ => {
+                format!("{state_part}\n\n请分析当前局面并给出行动建议。如果有行动建议，在最后一行附 ACTION。")
+            }
+        }
     };
     msgs.push(ChatMessage::user(user_content));
     msgs
+}
+
+/// 对话历史中的一轮。
+#[derive(Debug, Clone)]
+pub enum ChatTurn {
+    User(String),
+    Assistant(String),
 }

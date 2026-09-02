@@ -11,9 +11,13 @@ path = "src/main.rs"
 [dependencies]
 sts2-agent = { workspace = true }
 sts2-core = { workspace = true }
+sts2-llm = { workspace = true }
+sts2-mcp = { workspace = true }
 tokio = { workspace = true }
+tokio-util = "0.7"
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
+serde_json = { workspace = true }

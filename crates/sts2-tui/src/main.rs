@@ -1,34 +1,38 @@
-//! sts2-tui: 终端界面（见 PLAN.md §5.6）。
-//! P4 阶段提供 `--decide --mock` 可运行入口；P6 实现完整 ratatui 界面。
+//! sts2-tui: 终端界面——自然语言对话模式。
+//!
+//! 可用命令：
+//! --check              校验配置
+//! --decide [--mock]     单次 LLM 决策（裸文本）
+//! --play [--mock]       自动对局（裸文本）
+//! --tui [--mock]        交互式 ratatui 对话界面
 
 #![forbid(unsafe_code)]
+
+mod app;
+mod runner;
+mod ui;
 
 use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(name = "sts2-tui", version, about = "STS2 决策 Agent 终端界面")]
 struct Cli {
-    /// 跳过 UI，仅校验配置与依赖是否就绪。
     #[arg(long)]
     check: bool,
-    /// 执行一次 LLM 决策（取状态 → 调 LLM → 打印建议）。
     #[arg(long)]
     decide: bool,
-    /// --decide 时使用 Mock MCP server（而非 config 里的真实 server）。
-    #[arg(long)]
-    mock: bool,
-    /// 显示 LLM 思考过程（reasoning）。
-    #[arg(long)]
-    thinking: bool,
-    /// 自动对局：循环取状态→决策→执行→取状态，直到结束或打断。
     #[arg(long)]
     play: bool,
-    /// --play 时的最大轮数（默认 20）。
-    #[arg(long, default_value = "20")]
-    max_turns: u32,
-    /// LLM 用中文回答。
+    #[arg(long)]
+    tui: bool,
+    #[arg(long)]
+    mock: bool,
+    #[arg(long)]
+    thinking: bool,
     #[arg(long)]
     zh: bool,
+    #[arg(long, default_value = "20")]
+    max_turns: u32,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -49,12 +53,27 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+    } else if cli.tui {
+        let cfg = sts2_agent::load_config()?;
+        if cfg.model.api_key.is_empty() {
+            eprintln!("未配置 API key。");
+            std::process::exit(1);
+        }
+        tokio::runtime::Runtime::new()?.block_on(async {
+            runner::run(
+                &cfg,
+                cli.mock,
+                cli.thinking,
+                cli.zh,
+                cli.play,
+                cli.max_turns,
+            )
+            .await
+        })
     } else if cli.decide {
         let cfg = sts2_agent::load_config()?;
         if cfg.model.api_key.is_empty() {
-            eprintln!(
-                "未配置 API key。请在 config/.env 设置 STS2_OPENAI_API_KEY 或在 config.toml 填写。"
-            );
+            eprintln!("未配置 API key。");
             std::process::exit(1);
         }
         tokio::runtime::Runtime::new()?.block_on(async {
@@ -63,16 +82,15 @@ fn main() -> anyhow::Result<()> {
     } else if cli.play {
         let cfg = sts2_agent::load_config()?;
         if cfg.model.api_key.is_empty() {
-            eprintln!(
-                "未配置 API key。请在 config/.env 设置 STS2_OPENAI_API_KEY 或在 config.toml 填写。"
-            );
+            eprintln!("未配置 API key。");
             std::process::exit(1);
         }
         tokio::runtime::Runtime::new()?.block_on(async {
             sts2_agent::play::run_play(&cfg, cli.mock, cli.thinking, cli.max_turns, cli.zh).await
         })
     } else {
-        eprintln!("sts2-tui: 可用命令：--check | --decide [--mock] [--thinking] [--zh] | --play [--mock] [--thinking] [--zh] [--max-turns N]");
+        eprintln!("sts2-tui: 可用命令：--check | --decide [--mock] [--zh] | --play [--mock] [--zh] | --tui [--mock] [--zh] [--max-turns N]");
+        eprintln!("  --tui 进入交互式对话界面");
         Ok(())
     }
 }
