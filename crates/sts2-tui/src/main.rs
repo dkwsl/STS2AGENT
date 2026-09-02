@@ -17,6 +17,18 @@ struct Cli {
     /// --decide 时使用 Mock MCP server（而非 config 里的真实 server）。
     #[arg(long)]
     mock: bool,
+    /// 显示 LLM 思考过程（reasoning）。
+    #[arg(long)]
+    thinking: bool,
+    /// 自动对局：循环取状态→决策→执行→取状态，直到结束或打断。
+    #[arg(long)]
+    play: bool,
+    /// --play 时的最大轮数（默认 20）。
+    #[arg(long, default_value = "20")]
+    max_turns: u32,
+    /// LLM 用中文回答。
+    #[arg(long)]
+    zh: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,10 +57,22 @@ fn main() -> anyhow::Result<()> {
             );
             std::process::exit(1);
         }
-        tokio::runtime::Runtime::new()?
-            .block_on(async { sts2_agent::decide::run_decide(&cfg, cli.mock).await })
+        tokio::runtime::Runtime::new()?.block_on(async {
+            sts2_agent::decide::run_decide(&cfg, cli.mock, cli.thinking, cli.zh).await
+        })
+    } else if cli.play {
+        let cfg = sts2_agent::load_config()?;
+        if cfg.model.api_key.is_empty() {
+            eprintln!(
+                "未配置 API key。请在 config/.env 设置 STS2_OPENAI_API_KEY 或在 config.toml 填写。"
+            );
+            std::process::exit(1);
+        }
+        tokio::runtime::Runtime::new()?.block_on(async {
+            sts2_agent::play::run_play(&cfg, cli.mock, cli.thinking, cli.max_turns, cli.zh).await
+        })
     } else {
-        eprintln!("sts2-tui: UI 尚未实现（P6）。可用 --check 校验配置，或 --decide [--mock] 执行一次 LLM 决策。");
+        eprintln!("sts2-tui: 可用命令：--check | --decide [--mock] [--thinking] [--zh] | --play [--mock] [--thinking] [--zh] [--max-turns N]");
         Ok(())
     }
 }

@@ -263,6 +263,7 @@ sts2agent/
 4. **LLM 供应商差异**：薄 reqwest 客户端兼容 OpenAI/DeepSeek/本地，思考模式按供应商分支处理。
 5. **演示鲁棒性**：Mock + 真实接口双轨，避免演示依赖真实游戏环境。
 6. **真实联调依赖游戏+Mod**：演示与开发阶段用 Mock；真实联调需本机运行游戏并装 `STS2_MCP` Mod（非阻塞当前开发）。
+7. **中文输出不稳定**：`--zh` 时 LLM 思考过程偶尔仍用英文。待修复：可在 system prompt 中强化指令、或在 streaming 层对 reasoning_content 追加语言约束、或改用结构化 JSON 输出（`response_format`）强制字段语言。
 
 ---
 

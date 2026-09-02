@@ -159,3 +159,47 @@ cargo run -p sts2-tui -- --decide --mock
 
 - **需要你配置 API key** 才能看到 LLM 决策实跑。请通过 `config/.env`（`STS2_OPENAI_API_KEY=sk-...`）或 `secret/` 提供——**不要**直接贴在对话里。config.toml 里可改 endpoint/model/price 切换供应商。
 - 下一步可进入 **P5：完整编排**（会话/历史、CancellationToken 打断、多轮循环、LLM 输出解析为 Action 并执行）。是否需要把 P0–P4 commit 推送到 GitHub？
+
+---
+
+## 修乱码 + 闭合回路（已完成）
+
+### 步骤 1：修乱码
+- 在 `sts2-llm/client.rs` 加 `sanitize()` 函数：过滤控制字符和 NUL，保留换行/制表符；流式和非流式路径均应用。
+- `decide.rs` 加 `show_thinking` 参数：默认不打印 reasoning（之前乱码来自 reasoning 流）；加 `--thinking` CLI flag 可选开启。
+- 效果：实测 `--play --mock` 6 轮，全程无乱码。
+
+### 步骤 2：闭合回路（自动对局）
+- `parse.rs`：从 LLM 输出提取 `ACTION: tool | key=value | ...`，值自动推断 int/string，工具名归一化别名（end_turn→combat_end_turn 等）。6 个单测全绿。
+- `play.rs`：自动对局循环——每轮取状态→LLM 流式决策→解析 ACTION→MCP 执行→记录结果到历史→取下一状态。保留最近 5 轮历史（含执行结果）供 LLM 上下文。
+- `sts2-tui` CLI 新增 `--play`、`--max-turns N`、`--thinking`。
+- 预算守卫：每轮检查 `is_over_budget()`，超额自动停。
+- 状态摘要：每轮标题显示 `[地图]` / `[战斗 R1 | 72/80 HP, 3 能量 | 敌人: Jaw Worm]` / `[奖励]` 等。
+- 历史反馈：执行成功/失败结果都记入历史，LLM 能从失败中调整策略。
+
+### 步骤 3：验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（19 passed：parse 6 + core 7 + llm 4 + mcp 2）。
+- `cargo run -p sts2-tui -- --play --mock --max-turns 6` 实测：LLM 第 1 轮选 Shop 失败→第 2 轮改选 Monster→战斗→2× Strike 杀 Jaw Worm→领 25 金+药水。全程无乱码，成本 $0.0024。
+
+### 如何检验成果
+```bash
+# 1. 单次决策（修乱码后干净输出）
+cargo run -p sts2-tui -- --decide --mock
+
+# 2. 自动对局（闭合回路，看 LLM 自动打通一局 Mock）
+cargo run -p sts2-tui -- --play --mock --max-turns 6
+
+# 3. 带思考过程
+cargo run -p sts2-tui -- --play --mock --max-turns 6 --thinking
+
+# 4. 全套测试
+cargo test --workspace
+```
+预期：LLM 每轮给出 ACTION + REASON，自动执行，状态从地图→战斗→杀敌→领奖→回地图。token/成本逐轮累计。Ctrl+C 可打断。
+
+---
+
+## 待你确认/配合的事项
+
+- config.toml 里 `price_in`/`price_out` 仍是 OpenAI 的默认价格，GLM-5 实际价格不同。你知道清华平台定价的话可以改，不改也不影响功能（只影响 cost 显示）。
+- 下一步方向：commit 推送？做 TUI 界面（P6）？加会话历史保存/加载（R5）？

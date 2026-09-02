@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 
 pub mod decide;
+pub mod parse;
+pub mod play;
 
 use sts2_core::Config;
 

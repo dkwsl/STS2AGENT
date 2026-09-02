@@ -88,14 +88,11 @@ impl LlmClient {
         }
 
         let v: Value = resp.json().await.context("failed to parse response")?;
-        let content = v["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let content = sanitize(v["choices"][0]["message"]["content"].as_str().unwrap_or(""));
         let reasoning = v["choices"][0]["message"]["reasoning_content"]
             .as_str()
             .or_else(|| v["choices"][0]["message"]["reasoning"].as_str())
-            .map(|s| s.to_string());
+            .map(sanitize);
         let usage = Usage {
             prompt_tokens: v["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
             completion_tokens: v["usage"]["completion_tokens"].as_u64().unwrap_or(0),
@@ -177,14 +174,20 @@ impl LlmClient {
                     if let Ok(parsed) = serde_json::from_str::<Value>(data) {
                         // content delta
                         if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
-                            send(StreamEvent::Delta(content.to_string()));
+                            let c = sanitize(content);
+                            if !c.is_empty() {
+                                send(StreamEvent::Delta(c));
+                            }
                         }
-                        // reasoning delta (DeepSeek)
+                        // reasoning delta (DeepSeek reasoning_content / GLM reasoning)
                         if let Some(r) = parsed["choices"][0]["delta"]["reasoning_content"]
                             .as_str()
                             .or_else(|| parsed["choices"][0]["delta"]["reasoning"].as_str())
                         {
-                            send(StreamEvent::Reasoning(r.to_string()));
+                            let r = sanitize(r);
+                            if !r.is_empty() {
+                                send(StreamEvent::Reasoning(r));
+                            }
                         }
                         // usage (final chunk, may have empty choices)
                         if let Some(u) = parsed.get("usage") {
@@ -221,4 +224,12 @@ impl LlmClient {
     pub fn thinking_mode(&self) -> bool {
         self.thinking_mode
     }
+}
+
+/// 过滤非可打印字符（控制字符、零宽字符等），保留换行和制表符。
+/// 防止 SSE 流中混入的乱码输出到终端。
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c == '\n' || *c == '\t' || *c == '\r' || (!c.is_control() && *c != '\u{0}'))
+        .collect()
 }
