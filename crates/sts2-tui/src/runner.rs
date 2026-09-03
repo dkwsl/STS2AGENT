@@ -268,6 +268,9 @@ async fn handle_backend_msg(
         }
         Backend::Usage(u) => {
             budget.record(&u, config.model.price_in, config.model.price_out);
+            state.total_input = budget.total_input();
+            state.total_output = budget.total_output();
+            state.total_cost = budget.total_cost();
         }
         Backend::IntentReady { text, intent } => {
             state.progress = None;

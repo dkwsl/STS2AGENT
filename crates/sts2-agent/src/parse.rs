@@ -33,7 +33,9 @@ pub fn parse_action(text: &str) -> Result<ParsedAction> {
         bail!("ACTION 行缺少 tool name");
     }
 
-    let tool = normalize_tool(parts[0]);
+    // LLM 有时输出 "combat_end_turn()" 带括号，需去掉
+    let tool_raw = parts[0].trim_end_matches("()").trim();
+    let tool = normalize_tool(tool_raw);
     let mut args = serde_json::Map::new();
     for part in &parts[1..] {
         if let Some((k, v)) = part.split_once('=') {
@@ -204,6 +206,14 @@ mod tests {
         let text = "action: combat_end_turn\nreason: done";
         let a = parse_action(text).unwrap();
         assert_eq!(a.tool, "combat_end_turn");
+    }
+
+    #[test]
+    fn strip_parentheses_from_tool() {
+        // LLM 输出 combat_end_turn() 带括号
+        let a = parse_action("ACTION: combat_end_turn()").unwrap();
+        assert_eq!(a.tool, "combat_end_turn");
+        assert!(a.args.as_object().unwrap().is_empty());
     }
 
     #[test]

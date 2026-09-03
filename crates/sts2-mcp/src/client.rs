@@ -23,7 +23,7 @@ impl McpClient {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::null()) // 丢弃 stderr，防止 Python 输出搞乱 TUI
             .spawn()
             .context(format!("failed to spawn MCP server: {command}"))?;
 
