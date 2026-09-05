@@ -33,6 +33,12 @@ struct Cli {
     zh: bool,
     #[arg(long, default_value = "20")]
     max_turns: u32,
+    /// 列出历史会话。
+    #[arg(long)]
+    list: bool,
+    /// 加载历史会话回放。
+    #[arg(long)]
+    load: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -50,6 +56,72 @@ fn main() -> anyhow::Result<()> {
             }
             Err(e) => {
                 eprintln!("config error: {e:#}");
+                std::process::exit(1);
+            }
+        }
+    } else if cli.list {
+        let cfg = sts2_agent::load_config()?;
+        let store = sts2_agent::storage::SessionStore::from_dir(&cfg.storage.sessions_dir);
+        match store.list() {
+            Ok(sessions) => {
+                if sessions.is_empty() {
+                    println!("暂无历史会话。");
+                } else {
+                    println!(
+                        "{:<16} {:<20} {:<6} {:<10} {:<4}",
+                        "ID", "模型", "轮数", "成本", "结束"
+                    );
+                    for m in sessions {
+                        println!(
+                            "{:<16} {:<20} {:<6} ${:<9.4} {}",
+                            m.id,
+                            m.model,
+                            m.turn_count,
+                            m.total_cost,
+                            if m.finished { "是" } else { "否" }
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("列出会话失败: {e:#}");
+                std::process::exit(1);
+            }
+        }
+    } else if let Some(id) = &cli.load {
+        let cfg = sts2_agent::load_config()?;
+        let store = sts2_agent::storage::SessionStore::from_dir(&cfg.storage.sessions_dir);
+        match store.load(id) {
+            Ok(session) => {
+                println!("=== 会话 {} ===", session.id);
+                println!(
+                    "模型: {} | 轮数: {} | 成本: ${:.4}\n",
+                    session.model,
+                    session.turns.len(),
+                    session.total_cost
+                );
+                for t in &session.turns {
+                    println!("--- 第 {} 轮 [{}] ---", t.turn, t.state_summary);
+                    if !t.agent_text.is_empty() {
+                        println!("{}", t.agent_text);
+                    }
+                    if let Some(a) = &t.action {
+                        println!("ACTION: {a}");
+                    }
+                    if let Some(r) = &t.result {
+                        println!("结果: {r}");
+                    }
+                    println!();
+                }
+                println!(
+                    "总用量: input={}, output={}, cost=${:.4}",
+                    session.total_input, session.total_output, session.total_cost
+                );
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("加载会话失败: {e:#}");
                 std::process::exit(1);
             }
         }
@@ -89,7 +161,7 @@ fn main() -> anyhow::Result<()> {
             sts2_agent::play::run_play(&cfg, cli.mock, cli.thinking, cli.max_turns, cli.zh).await
         })
     } else {
-        eprintln!("sts2-tui: 可用命令：--check | --decide [--mock] [--zh] | --play [--mock] [--zh] | --tui [--mock] [--zh] [--max-turns N]");
+        eprintln!("sts2-tui: 可用命令：--check | --list | --load <id> | --tui [--mock] [--zh] [--max-turns N] | --decide [--mock] [--zh] | --play [--mock] [--zh]");
         eprintln!("  --tui 进入交互式对话界面");
         Ok(())
     }

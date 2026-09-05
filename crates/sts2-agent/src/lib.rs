@@ -8,6 +8,7 @@
 pub mod decide;
 pub mod parse;
 pub mod play;
+pub mod storage;
 
 use sts2_core::Config;
 

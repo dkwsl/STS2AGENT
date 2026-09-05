@@ -314,6 +314,46 @@ sts2agent/
   - 限制重绘频率：仅当状态变化时才 `draw`，或做脏标记。
   - 考虑用 `tokio::select!` 直接等 `bt_rx.recv()` 而非 sleep + try_recv。
 
+### T6. 退出时未保存 session
+
+- 现象：TUI 模式输入"退出"后程序关闭，但 `data/sessions/` 无新文件。
+- 原因：TUI `runner.rs` 的退出路径（`should_quit=true` → `break`）直接跳到终端恢复，未调用 `store.save(&session)`。TUI runner 中根本没有 `Session`/`SessionStore`——只有 `--play` 裸文本模式有存盘。
+- 修复：TUI runner 中引入 `Session` + `SessionStore`，每轮 `ExecDone` 和 `StreamDone` 时存盘，退出时 `session.finished = true; store.save()`。
+
+### T7. LLM 流中无法打断
+
+- 现象：LLM 思考/输出时用户发消息，Agent 不打断，而是分两段甚至顺序错乱。
+- 原因：用户 Enter 提交后走 `llm_parse_intent`（一次额外 LLM 调用），结果通过 `Backend::IntentReady` 异步回主循环。如果当前正在 Streaming 模式，`IntentReady` 到达后 `handle_user_intent` 中的 `Interrupt` 分支只 `cancel.cancel()` + 清空 `streaming_text`，但后台 `consume_stream` task 可能仍在跑（`cancel` 信号需要传到 `consume_stream` 的 `select!`）。另外 `Chat` 分支会发起新的 `start_decision`，与旧流叠加。
+- 修复方向：
+  - 用户提交时如果当前在 Streaming/Executing 模式，先 `cancel.cancel()` + 等待旧流结束（`stream_rx` 清空），再处理新意图。
+  - `consume_stream` 已经有 `cancel.cancelled()` 分支，但 `cancel` 是 `CancellationToken` clone——需确认 clone 传入的是同一个 token。
+  - 简化：用户在任何时候提交都先取消当前流，把用户消息加入历史，然后按意图处理。
+
+### T8. 输入文本在 UI 中显示两次
+
+- 现象：用户输入一条消息，对话面板出现两条 `[你]` 记录。
+- 原因：`handle_user_intent` 的每个分支（Confirm/Reject/Chat/Interrupt）都 `state.push_chat(MsgRole::User, text)`，但 `IntentReady` 到达前用户消息已经被 `push_chat` 了一次（在 Enter 处理器里）。两个路径重复 push。
+- 修复：Enter 处理器中不 push（交给 `handle_user_intent` 统一 push），或 `handle_user_intent` 中不 push（因为 Enter 处理器已 push）。选一个入口。
+
+### T9. UI 对话面板不自动换行
+
+- 现象：长行被截断而非换行，对话内容显示不全。
+- 原因：之前去掉 `Paragraph::Wrap` 改用手动截断（解决 scroll offset 不精确问题），导致超长行直接截断丢失内容。
+- 修复方向：恢复 `Wrap`，但用 `Paragraph::scroll` 按渲染后行数（而非原始行数）计算 offset。或用 `textwrap` crate 预先 wrap 文本再计算精确行数。关键：scroll offset 需与 Wrap 后实际行数一致。
+
+### T10. Agent 每次只能做一步操作且需用户确认
+
+- 现象：Agent 给出建议 → 用户"执行"确认 → 执行一步 → Agent 再给建议 → 用户再"执行"……非常机械。
+- 用户期望：
+  (1) Agent 可以直接执行操作而不必等用户确认。
+  (2) Agent 可以自动判断能否做多步操作并自己连续执行（如出牌→出牌→结束回合）。
+- 修复方向：
+  - system prompt 改为允许输出**多条 ACTION 行**（ACTION: ... / ACTION: ...），LLM 判断是否连续操作。
+  - `parse_action` 改为 `parse_actions`：解析多条 ACTION。
+  - 执行循环：逐条执行，每条执行后重取状态检查是否合法，连续操作直到无 ACTION 或用户打断。
+  - 用户确认模式改为可选（默认自动执行，用户可随时打断或说"等一下"暂停）。
+  - 安全阀：连续操作最多 N 步（可配置），防失控。
+
 ---
 
 *本计划为活文档，随实现进展与接口契约明确后迭代更新。*

@@ -102,39 +102,12 @@ fn draw_chat_panel(f: &mut Frame, state: &AppState, area: Rect) {
         lines.push("  输入「执行」确认 / 输入其他文字与 Agent 沟通".into());
     }
 
-    // T5 优化：只渲染可见区域行数，避免长文本 Wrap 全量计算
-    let visible = area.height.saturating_sub(2) as usize; // 减边框
-    let max_lines = visible + 20; // 少量余量
-    if lines.len() > max_lines {
-        lines = lines.split_off(lines.len() - max_lines);
-    }
-
-    // 手动截断长行（不用 Wrap，使行数准确，scroll offset 精确）
+    // 手动换行（不用 Wrap，使行数准确，scroll offset 精确）
+    let visible = area.height.saturating_sub(2) as usize;
     let max_width = area.width.saturating_sub(2) as usize;
-    let truncated: Vec<String> = lines
-        .iter()
-        .map(|l| {
-            let width = crate::app::display_width(l) as usize;
-            if width > max_width {
-                // 按字符截断到不超过 max_width 显示列
-                let mut acc = 0usize;
-                let mut out = String::new();
-                for c in l.chars() {
-                    let w = if c.is_ascii() { 1 } else { 2 };
-                    if acc + w > max_width {
-                        break;
-                    }
-                    acc += w;
-                    out.push(c);
-                }
-                out
-            } else {
-                l.clone()
-            }
-        })
-        .collect();
+    let wrapped: Vec<String> = lines.iter().flat_map(|l| wrap_line(l, max_width)).collect();
 
-    let content = truncated.join("\n");
+    let content = wrapped.join("\n");
     let content_lines = content.lines().count() as u16;
     let max_scroll = content_lines.saturating_sub(visible as u16);
     let scroll_offset = max_scroll.saturating_sub(state.chat_scroll);
@@ -143,6 +116,37 @@ fn draw_chat_panel(f: &mut Frame, state: &AppState, area: Rect) {
         .scroll((scroll_offset, 0))
         .block(block);
     f.render_widget(p, area);
+}
+
+/// 按显示宽度换行（CJK=2列），不截断内容。
+fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![line.to_string()];
+    }
+    let width = crate::app::display_width(line) as usize;
+    if width <= max_width {
+        return vec![line.to_string()];
+    }
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    for c in line.chars() {
+        let w = if c.is_ascii() { 1 } else { 2 };
+        if current_width + w > max_width && !current.is_empty() {
+            result.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+        current.push(c);
+        current_width += w;
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+    if result.is_empty() {
+        vec![line.to_string()]
+    } else {
+        result
+    }
 }
 
 fn draw_input_box(f: &mut Frame, state: &AppState, area: Rect) {

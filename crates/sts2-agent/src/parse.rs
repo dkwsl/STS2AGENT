@@ -14,19 +14,44 @@ pub struct ParsedAction {
     pub args: Value,
 }
 
-/// 从 LLM 完整输出中提取并解析 ACTION 行。
+/// 从 LLM 完整输出中提取并解析**所有** ACTION 行（支持多步操作）。
 pub fn parse_action(text: &str) -> Result<ParsedAction> {
     let action_line = text
         .lines()
-        .find(|l| l.trim_start().to_uppercase().starts_with("ACTION:"))
+        .find(|l| is_action_line(l))
         .ok_or_else(|| anyhow::anyhow!("LLM 输出中未找到 ACTION: 行"))?;
+    parse_single_action(action_line)
+}
 
-    let rest = action_line
-        .trim_start()
-        .split_once(':')
-        .map(|x| x.1)
-        .ok_or_else(|| anyhow::anyhow!("ACTION: 行格式错误"))?
-        .trim();
+/// 判断一行是否是 ACTION 行（含 "ACTION:" 前缀，或匹配 "tool_name | key=value" 模式）。
+pub fn is_action_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.to_uppercase().starts_with("ACTION:") {
+        return true;
+    }
+    // 无前缀但匹配 tool_name | key=value 模式
+    if let Some((tool, rest)) = trimmed.split_once('|') {
+        let tool = tool.trim();
+        // 工具名: 只含字母数字下划线
+        let valid = tool.chars().all(|c| c.is_alphanumeric() || c == '_');
+        let has_param = rest.contains('=');
+        return valid && !tool.is_empty() && has_param;
+    }
+    false
+}
+
+/// 提取 ACTION 行中的工具名和参数部分（去掉 "ACTION:" 前缀）。
+fn extract_action_text(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    if trimmed.to_uppercase().starts_with("ACTION:") {
+        trimmed.split_once(':').map(|x| x.1).unwrap_or("").trim()
+    } else {
+        trimmed
+    }
+}
+
+fn parse_single_action(action_line: &str) -> Result<ParsedAction> {
+    let rest = extract_action_text(action_line);
 
     let parts: Vec<&str> = rest.split('|').map(|s| s.trim()).collect();
     if parts.is_empty() || parts[0].is_empty() {
@@ -39,7 +64,7 @@ pub fn parse_action(text: &str) -> Result<ParsedAction> {
     let mut args = serde_json::Map::new();
     for part in &parts[1..] {
         if let Some((k, v)) = part.split_once('=') {
-            let k = k.trim();
+            let k = k.trim().trim_start_matches('_'); // LLM 有时输出 _index 代替 index
             let v = v.trim();
             if !k.is_empty() {
                 args.insert(k.to_string(), parse_value(v));
@@ -67,6 +92,23 @@ fn normalize_args(tool: &str, args: &mut serde_json::Map<String, Value>) {
             _ => "index",
         };
         args.insert(new_key.to_string(), v);
+    }
+    // target 必须是字符串类型（MCP server 要求 string，LLM 可能输出整数）
+    if let Some(v) = args.get("target") {
+        if !v.is_string() {
+            let s = match v {
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                _ => v.to_string(),
+            };
+            args.insert("target".to_string(), Value::String(s));
+        }
+    }
+    // slot 必须是整数
+    if let Some(Value::String(s)) = args.get("slot") {
+        if let Ok(n) = s.parse::<i64>() {
+            args.insert("slot".to_string(), Value::Number(n.into()));
+        }
     }
 }
 
@@ -209,11 +251,13 @@ mod tests {
     }
 
     #[test]
-    fn strip_parentheses_from_tool() {
-        // LLM 输出 combat_end_turn() 带括号
-        let a = parse_action("ACTION: combat_end_turn()").unwrap();
-        assert_eq!(a.tool, "combat_end_turn");
+    fn parse_no_param_action() {
+        let a = parse_action("ACTION: proceed_to_map").unwrap();
+        assert_eq!(a.tool, "proceed_to_map");
         assert!(a.args.as_object().unwrap().is_empty());
+
+        let a = parse_action("ACTION: combat_end_turn").unwrap();
+        assert_eq!(a.tool, "combat_end_turn");
     }
 
     #[test]

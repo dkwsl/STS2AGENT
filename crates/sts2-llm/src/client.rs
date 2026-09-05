@@ -123,15 +123,14 @@ impl LlmClient {
 
         let http = self.http.clone();
         tokio::spawn(async move {
-            let send = |ev: StreamEvent| {
-                let _ = tx.send(ev);
-            };
+            // send 返回 false = receiver 已 drop（被打断），应立即停止读 HTTP 流
+            let send = |ev: StreamEvent| -> bool { tx.send(ev).is_ok() };
 
             let resp = match http.post(&url).bearer_auth(&key).json(&body).send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    send(StreamEvent::Error(format!("request failed: {e:#}")));
-                    send(StreamEvent::Done);
+                    let _ = send(StreamEvent::Error(format!("request failed: {e:#}")));
+                    let _ = send(StreamEvent::Done);
                     return;
                 }
             };
@@ -139,8 +138,10 @@ impl LlmClient {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
-                send(StreamEvent::Error(format!("API error {status}: {text}")));
-                send(StreamEvent::Done);
+                if !send(StreamEvent::Error(format!("API error {status}: {text}"))) {
+                    return;
+                }
+                let _ = send(StreamEvent::Done);
                 return;
             }
 
@@ -152,7 +153,9 @@ impl LlmClient {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
-                        send(StreamEvent::Error(format!("stream error: {e}")));
+                        if !send(StreamEvent::Error(format!("stream error: {e}"))) {
+                            return;
+                        }
                         break;
                     }
                 };
@@ -167,26 +170,27 @@ impl LlmClient {
                     }
                     let data = &line[6..];
                     if data == "[DONE]" {
-                        send(StreamEvent::Usage(usage.clone()));
-                        send(StreamEvent::Done);
-                        return;
+                        if !send(StreamEvent::Usage(usage.clone())) {
+                            return;
+                        }
+                        if !send(StreamEvent::Done) {
+                            return;
+                        }
                     }
                     if let Ok(parsed) = serde_json::from_str::<Value>(data) {
-                        // content delta
                         if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str() {
                             let c = sanitize(content);
-                            if !c.is_empty() {
-                                send(StreamEvent::Delta(c));
+                            if !c.is_empty() && !send(StreamEvent::Delta(c)) {
+                                return;
                             }
                         }
-                        // reasoning delta (DeepSeek reasoning_content / GLM reasoning)
                         if let Some(r) = parsed["choices"][0]["delta"]["reasoning_content"]
                             .as_str()
                             .or_else(|| parsed["choices"][0]["delta"]["reasoning"].as_str())
                         {
                             let r = sanitize(r);
-                            if !r.is_empty() {
-                                send(StreamEvent::Reasoning(r));
+                            if !r.is_empty() && !send(StreamEvent::Reasoning(r)) {
+                                return;
                             }
                         }
                         // usage (final chunk, may have empty choices)
@@ -202,8 +206,10 @@ impl LlmClient {
                 }
             }
             // 流自然结束（无 [DONE]）
-            send(StreamEvent::Usage(usage));
-            send(StreamEvent::Done);
+            if !send(StreamEvent::Usage(usage)) {
+                return;
+            }
+            let _ = send(StreamEvent::Done);
         });
 
         Ok(rx)

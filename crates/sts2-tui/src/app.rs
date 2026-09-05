@@ -1,5 +1,7 @@
 //! TUI 应用状态。
 
+use tokio_util::sync::CancellationToken;
+
 use sts2_core::{GameState, StateType};
 
 /// 对话消息。
@@ -31,6 +33,21 @@ pub struct AppState {
     #[allow(dead_code)]
     pub zh: bool,
     pub finished: bool,
+    /// 是否自动执行 ACTION 行（true=用户指令时执行，false=仅建议）。
+    pub execute_actions: bool,
+    /// 自主模式：用户说了"你自己打"等，Agent 连续操作直到用户喊停。
+    pub auto_mode: bool,
+    /// 当前任务描述（用户指令的原文），每次分析时提醒 LLM 目标。
+    pub task: Option<String>,
+    /// 当前 LLM 流的 cancel token，打断时用。
+    pub current_cancel: CancellationToken,
+    /// 上一次已知的状态 JSON（用于检测用户手动操作）。
+    pub last_state_json: String,
+    /// LLM 正在分析的状态 JSON（决策开始时的快照）。
+    /// StreamDone 时与当前 last_state_json 比较，不一致则作废。
+    pub decision_state_json: String,
+    /// 上次状态轮询时间（Instant 的简单替代：SystemTime）。
+    pub last_poll: std::time::Instant,
     pub pending_action: Option<String>,
     pub input: String,
     pub cursor: usize,
@@ -45,6 +62,7 @@ pub enum Mode {
     FetchingState,
     Streaming,
     Executing,
+    #[allow(dead_code)]
     PendingConfirm,
 }
 
@@ -63,6 +81,13 @@ impl AppState {
             show_thinking: false,
             zh,
             finished: false,
+            execute_actions: false,
+            auto_mode: false,
+            task: None,
+            current_cancel: CancellationToken::new(),
+            last_state_json: String::new(),
+            decision_state_json: String::new(),
+            last_poll: std::time::Instant::now(),
             pending_action: None,
             input: String::new(),
             cursor: 0,
@@ -205,6 +230,52 @@ pub fn state_lines(gs: &GameState) -> Vec<String> {
         }
     }
 
+    // 卡牌奖励选择
+    if let Some(cr) = &gs.card_reward {
+        if !cr.cards.is_empty() {
+            lines.push(String::new());
+            lines.push("可选卡牌:".into());
+            for card in &cr.cards {
+                lines.push(format!(
+                    "  [{}] {} {}费 {}",
+                    card.index.unwrap_or(0),
+                    card.name,
+                    card.cost,
+                    card.description.as_deref().unwrap_or("")
+                ));
+            }
+            lines.push(format!("  可跳过: {}", cr.can_skip.unwrap_or(false)));
+        }
+    }
+
+    // 卡牌选择叠层（transform/upgrade/remove/choose）
+    if let Some(cs) = &gs.card_select {
+        lines.push(String::new());
+        if let Some(p) = &cs.prompt {
+            lines.push(format!("卡牌选择: {p}"));
+        } else {
+            lines.push("卡牌选择:".into());
+        }
+        if let Some(st) = &cs.screen_type {
+            lines.push(format!("  类型: {st}"));
+        }
+        for card in &cs.cards {
+            lines.push(format!(
+                "  [{}] {} {}费 {}",
+                card.index.unwrap_or(0),
+                card.name,
+                card.cost,
+                card.description.as_deref().unwrap_or("")
+            ));
+        }
+        lines.push(format!(
+            "  可确认: {} | 可取消: {} | 预览中: {}",
+            cs.can_confirm.unwrap_or(false),
+            cs.can_cancel.unwrap_or(false),
+            cs.preview_showing.unwrap_or(false)
+        ));
+    }
+
     let _ = gs.state_type;
     lines
 }
@@ -228,6 +299,8 @@ pub fn state_summary(gs: &GameState) -> String {
             }
         }
         StateType::Rewards => "奖励".into(),
+        StateType::CardReward => "选牌".into(),
+        StateType::CardSelect => "卡牌选择".into(),
         StateType::RestSite => "休息点".into(),
         StateType::Shop | StateType::FakeMerchant => "商店".into(),
         StateType::Event => "事件".into(),

@@ -1,15 +1,16 @@
-//! 自动对局循环：取状态 → LLM 决策 → 解析 ACTION → 执行 → 取下一状态 → …
-//! 直到 game_over / 预算超 / 轮数到 / 用户 Ctrl+C。
+//! 自动对局循环（裸文本模式）：取状态 → LLM 决策 → 解析 → 执行 → 循环。
+//! 每轮自动存盘到会话历史（R5）。
 
 use std::io::Write;
 
 use anyhow::Result;
 use sts2_core::{Config, GameState, StateType};
-use sts2_llm::{BudgetGuard, LlmClient, StreamEvent};
+use sts2_llm::{BudgetGuard, LlmClient, StreamEvent, Usage};
 use sts2_mcp::McpClient;
 
 use crate::decide::build_messages;
 use crate::parse::parse_action;
+use crate::storage::{Session, SessionStore, TurnRecord};
 
 pub async fn run_play(
     config: &Config,
@@ -35,6 +36,10 @@ pub async fn run_play(
     let mut budget = BudgetGuard::new(config.budget.token_limit, config.budget.cost_limit_usd);
     let _ = zh;
 
+    // 会话存储
+    let store = SessionStore::from_dir(&config.storage.sessions_dir);
+    let mut session = Session::new(&config.model.model);
+
     for turn in 1..=max_turns {
         // 1. 取状态
         let state_json = mcp.get_game_state("json").await?;
@@ -58,10 +63,20 @@ pub async fn run_play(
             break;
         }
 
-        // 3. LLM 决策（流式，收集完整文本）
-        let messages = build_messages(&state_json, &config.model.model, &[], &summary, None, zh);
+        // 3. LLM 决策
+        let messages = build_messages(
+            &state_json,
+            &config.model.model,
+            &[],
+            &summary,
+            None,
+            false,
+            None,
+            zh,
+        );
         let mut rx = llm.chat_stream(&messages)?;
         let mut full_text = String::new();
+        let mut turn_usage = Usage::default();
 
         while let Some(ev) = rx.recv().await {
             match ev {
@@ -75,6 +90,7 @@ pub async fn run_play(
                     std::io::stderr().flush().ok();
                 }
                 StreamEvent::Usage(u) => {
+                    turn_usage = u.clone();
                     budget.record(&u, config.model.price_in, config.model.price_out);
                 }
                 StreamEvent::Done => break,
@@ -86,6 +102,13 @@ pub async fn run_play(
             }
         }
         println!();
+
+        // 4. 解析 ACTION
+        let action_line = full_text
+            .lines()
+            .find(|l| l.trim_start().to_uppercase().starts_with("ACTION:"))
+            .unwrap_or("")
+            .to_string();
 
         let action = match parse_action(&full_text) {
             Ok(a) => a,
@@ -101,23 +124,54 @@ pub async fn run_play(
             action.tool,
             serde_json::to_string(&action.args).unwrap_or_default()
         );
-        match mcp.call_tool(&action.tool, action.args.clone()).await {
-            Ok(result) => {
-                let preview: String = result.chars().take(120).collect();
-                println!("[结果] {preview}");
-            }
-            Err(e) => {
-                let msg = format!("{e:#}");
-                eprintln!("[执行失败] {msg}");
-            }
-        }
+        let (success, result_msg) = match mcp.call_tool(&action.tool, action.args.clone()).await {
+            Ok(r) => (true, r.chars().take(120).collect::<String>()),
+            Err(e) => (false, format!("{e:#}")),
+        };
+        println!("[结果] {result_msg}");
 
-        eprintln!("[用量] {}\n", budget.summary());
+        // 6. 存盘
+        let agent_text = full_text
+            .lines()
+            .filter(|l| !l.trim_start().to_uppercase().starts_with("ACTION:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+
+        session.turns.push(TurnRecord {
+            turn,
+            state_summary: summary,
+            state_json: state_json.clone(),
+            agent_text,
+            action: if action_line.is_empty() {
+                None
+            } else {
+                Some(action_line)
+            },
+            result: Some(result_msg),
+            success,
+            user_input: None,
+            input_tokens: turn_usage.prompt_tokens,
+            output_tokens: turn_usage.completion_tokens,
+        });
+        session.total_input = budget.total_input();
+        session.total_output = budget.total_output();
+        session.total_cost = budget.total_cost();
+        let _ = store.save(&session);
+
+        eprintln!("[用量] {} | 会话已存盘: {}\n", budget.summary(), session.id);
     }
 
+    session.finished = true;
+    let _ = store.save(&session);
     mcp.shutdown().await.ok();
     println!("═══ 对局结束 ═══");
     println!("总用量: {}", budget.summary());
+    println!(
+        "会话 ID: {} （可用 --load {} 回放）",
+        session.id, session.id
+    );
     Ok(())
 }
 
