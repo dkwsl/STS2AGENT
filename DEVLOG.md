@@ -352,5 +352,28 @@ cargo test --workspace
 - `--play --mock --zh --max-turns 3` 端到端：对局从地图推进到战斗，知识库注入生效（LLM 引用 Burning Blood 回血机制），会话存盘正常。
 
 ### 注意事项
-- `config/config.toml` 含明文 API key（已 gitignore，未入库）。规范上 key 应放 `config/.env`（已 gitignore）或 `secret/`，建议后续迁移。
-- T1–T10 TUI 待修问题（PLAN.md §14）尚未处理，部分可能已被 "Major overhaul" commit 修复，待核查。
+- ~~`config/config.toml` 含明文 API key~~ → 已迁移到 `config/.env`（见下节）。
+- T1–T10 TUI 待修问题（PLAN.md §14）已核查，结论见下节。
+
+---
+
+## T1–T10 核查 + dotenvy 路径修复 + API key 迁移（已完成）
+
+### 步骤 1：逐项核查 T1–T10（对照 "Major overhaul" commit 6bdb711）
+逐一审查 runner.rs / app.rs / ui.rs / decide.rs 代码，结论（详见 PLAN.md §14 核查表）：
+- **已修（9 项）**：T1（Esc+文字"退出"，IntentReady 拦截 Quit 返回 quit）/ T2（system prompt 重写为对话伙伴）/ T4（streaming_text 分离，流式不重置 scroll）/ T5（限帧 66ms+批量排空）/ T6（退出存 session）/ T7（abort_current_llm+排空 bt_rx）/ T8（Enter 只 push chat，intent 只 push history）/ T9（wrap_line 手动换行）/ T10（pending_actions 多步队列）。
+- **待定（1 项）**：T3 滚动方向。当前 `↑=看上方历史`（runner.rs:258），实为 TUI 标准约定（vim/less/man 一致），PLAN 原"对调"要求疑基于误判，建议保持现状待用户实测确认。
+
+### 步骤 2：修复 dotenvy 路径 bug（API key 无法从 config/.env 加载）
+- **问题**：`load_config` 用 `dotenvy::dotenv()`（从 cwd 找 `./.env`），但项目 .env 在 `config/.env`，导致清空 config.toml 的 api_key 后 key 无法加载（`--decide` 报"未配置 API key"）。
+- **修复**（lib.rs:18-21）：优先 `dotenvy::from_path("config/.env")`，失败回退 `dotenvy::dotenv()`。
+- **验证**：修复后 `--decide --mock` 不再报"未配置"，正常进入 MCP 连接阶段。
+
+### 步骤 3：迁移 config.toml 明文 key 到 config/.env（AGENTS.md §4 合规）
+- `config/config.toml` 的 `api_key` 字段原含明文 key（已 gitignore 未入库，但违反 §4"密钥仅放 secret/ 或环境变量"）。
+- 迁移：`config.toml` 的 `api_key = ""`（留空），key 仅存 `config/.env` 的 `STS2_OPENAI_API_KEY`（已确认 .env 与原 config.toml 的 key 一致）。
+- `load_config` 在 api_key 畺空时从环境变量读取，行为不变。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
+- `--decide --mock` api_key 从 .env 正确加载。

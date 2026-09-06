@@ -269,7 +269,22 @@ sts2agent/
 
 ## 14. TUI 对话模式待修复问题（逐项推进）
 
-> 以下五个问题按优先级逐项修复，不做批量改动。
+> 以下十个问题按优先级逐项修复，不做批量改动。
+
+### 核查结论（2026-09-06，接替 agent 复核 "Major overhaul" commit 6bdb711 后状态）
+
+| 编号 | 状态 | 说明 / 修复位置 |
+|---|---|---|
+| T1 | ✅ 已修 | Esc 退出 + 文字"退出"（`llm_parse_intent` 识别 QUIT，`IntentReady` 分支 runner.rs:403 拦截返回 quit=true；主循环 272 保存 session 后退出） |
+| T2 | ✅ 已修 | system prompt 重写为"牌手顾问+对话伙伴"（decide.rs:104-167），明确区分"明确指令→ACTION"/"对话→纯文字"，给出正反例 |
+| T3 | ⚠️ 待定 | 当前 `↑=chat_scroll+3`→看上方历史（runner.rs:258-264），实为 TUI 标准约定（vim/less/man 一致）。PLAN 原"对调"要求疑基于误判，建议保持现状，待用户实测确认 |
+| T4 | ✅ 已修 | 流式 Delta 写入 `streaming_text`（独立渲染），不触发 `push_chat`；仅新消息 `push_chat` 时 `chat_scroll=0`（app.rs:143）。流式期间用户可自由浏览 |
+| T5 | ✅ 已修 | 限帧 66ms（runner.rs:308）+ `while try_recv` 批量排空后台消息（282）+ `yield_now` 让出 CPU |
+| T6 | ✅ 已修 | 退出路径 `session.finished=true; store.save(&session)`（runner.rs:272-278）；每轮 ExecDone 也存盘（600） |
+| T7 | ✅ 已修 | Enter 时若非 Idle 调 `abort_current_llm`（cancel + 排空 bt_rx + 清空 streaming_text，runner.rs:95/231）；consume_stream 有 `cancel.cancelled()` 分支（333） |
+| T8 | ✅ 已修 | Enter 处理器 push 一次 `state.chat`（237）；`handle_user_intent` 只 push `history`（LLM 上下文，非 UI），UI 不重复 |
+| T9 | ✅ 已修 | `wrap_line` 按显示宽度手动换行（CJK=2列，ui.rs:105-150），不截断内容；scroll offset 按 wrap 后行数计算 |
+| T10 | ✅ 已修 | `action_lines` 多行 → `pending_actions` 队列连续执行（runner.rs:511/608-634）；每步执行后重取状态；auto_mode 默认自动执行，用户可打断 |
 
 ### T1. 无法退出程序
 

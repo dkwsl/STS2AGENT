@@ -15,7 +15,10 @@ use sts2_core::Config;
 
 /// 加载配置：`config.toml` + `.env`（密钥优先环境变量）。
 pub fn load_config() -> anyhow::Result<Config> {
-    let _ = dotenvy::dotenv();
+    // 优先加载 config/.env，不存在则回退到默认 dotenv（cwd/.env）
+    if dotenvy::from_path("config/.env").is_err() {
+        let _ = dotenvy::dotenv();
+    }
     let text = std::fs::read_to_string("config/config.toml")
         .or_else(|_| std::fs::read_to_string("config.toml"))?;
     let mut cfg: Config = toml::from_str(&text)?;
