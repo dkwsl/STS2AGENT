@@ -60,7 +60,6 @@ pub async fn run_decide(
         None,
         false,
         None,
-        None,
         if game_knowledge.is_empty() {
             None
         } else {
@@ -110,7 +109,6 @@ pub fn build_messages(
     user_msg: Option<&str>,
     auto_mode: bool,
     task: Option<&str>,
-    knowledge: Option<&str>,
     game_knowledge: Option<&str>,
     session_notes: Option<&str>,
     zh: bool,
@@ -202,12 +200,6 @@ pub fn build_messages(
         Some(t) if !t.is_empty() => format!("\n\n当前任务: {t}\n思考: 当前状态离完成任务还差什么？下一步做什么能推进任务？\n有些操作需要确认（如选完角色后需要点 confirm 开始游戏，选完遗物后需要 proceed）。注意当前 state_type 是什么，检查是否需要确认/推进操作。"),
         _ => String::new(),
     };
-    let knowledge_part = match knowledge {
-        Some(k) if !k.is_empty() => {
-            format!("\n\n知识库参考（可能来自旧版本，以当前游戏状态 JSON 为准）:\n{k}")
-        }
-        _ => String::new(),
-    };
     let game_knowledge_part = match game_knowledge {
         Some(g) if !g.is_empty() => {
             format!("\n\n游戏数据参考（从反编译数据生成，以当前游戏状态 JSON 为准）:\n{g}")
@@ -226,13 +218,13 @@ pub fn build_messages(
         };
         match user_msg {
             Some(msg) if !msg.is_empty() => {
-                format!("{state_part}{game_knowledge_part}{knowledge_part}{notes_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家给的是操作指令，给出 ACTION 行。")
+                format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家给的是操作指令，给出 ACTION 行。")
             }
             _ => {
                 if auto_mode {
-                    format!("{state_part}{game_knowledge_part}{knowledge_part}{notes_part}{task_part}\n\n玩家说了「自己打」，已进入自主模式，你被授权连续操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行），直到任务完成或玩家喊停。")
+                    format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n玩家说了「自己打」，已进入自主模式，你被授权连续操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行），直到任务完成或玩家喊停。")
                 } else {
-                    format!("{state_part}{game_knowledge_part}{knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
+                    format!("{state_part}{game_knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
                 }
             }
         }

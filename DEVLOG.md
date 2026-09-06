@@ -457,3 +457,22 @@ cargo test --workspace
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（35 passed）。
 - `--decide --mock`：mock 初始为 map 状态，game_knowledge 返回 683 字节（playbook 决策指引段落）。进入战斗后手牌/敌人出现时会查到对应卡牌/敌人索引行。
+
+---
+
+## 删除旧攻略知识库（已完成）
+
+### 背景
+`data/knowledge/raw/`（爬取攻略）被 `.gitignore` 忽略，且与 `game-knowledge/` 结构化索引功能重叠。用户要求移除旧知识库体系，只保留 `game-knowledge/`。
+
+### 改动
+1. **knowledge.rs**：删除 `extract_keywords` / `synonym_map` / `expand_keywords` / `search_knowledge` / `split_paragraphs` 及 6 个相关测试。只保留 `search_game_knowledge` 及其辅助函数。
+2. **config.rs**：删除 `knowledge_dir` 字段和 `default_knowledge_dir`。
+3. **decide.rs**：`build_messages` 删除 `knowledge` 参数和 `knowledge_part`。
+4. **runner.rs / play.rs**：删除 `search_knowledge` 调用。
+5. **app.rs**：删除 `extract_keywords_external`。
+6. **scripts/knowledge/fetch.py** 和 **data/knowledge/** 目录删除。
+7. **config.example.toml / README.md**：移除 `knowledge_dir` 引用，更新描述。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（29 passed）。

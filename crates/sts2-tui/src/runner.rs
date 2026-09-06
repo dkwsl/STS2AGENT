@@ -50,16 +50,11 @@ fn start_decision(
     state.decision_state_json = state_json.to_string();
     let summary = state_summary(gs);
 
-    // K5: 知识库检索
-    let keywords = crate::app::extract_keywords_external(gs);
-    let knowledge =
-        sts2_agent::knowledge::search_knowledge(&keywords, &config.storage.knowledge_dir);
-
     // game-knowledge 结构化索引检索
     let game_knowledge =
         sts2_agent::knowledge::search_game_knowledge(gs, &config.storage.game_knowledge_dir);
 
-    // K5: 读取 session 笔记
+    // 读取 session 笔记
     let notes_path = format!(
         "{}/{}_notes.md",
         config.storage.sessions_dir, state.session_id
@@ -74,11 +69,6 @@ fn start_decision(
         user_msg,
         state.auto_mode,
         state.task.as_deref(),
-        if knowledge.is_empty() {
-            None
-        } else {
-            Some(&knowledge)
-        },
         if game_knowledge.is_empty() {
             None
         } else {

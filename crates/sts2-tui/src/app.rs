@@ -149,11 +149,6 @@ pub fn display_width(s: &str) -> u16 {
     s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
 }
 
-/// K5: 从 GameState 提取关键词（转发到 sts2_agent::knowledge）。
-pub fn extract_keywords_external(gs: &GameState) -> Vec<String> {
-    sts2_agent::knowledge::extract_keywords(gs)
-}
-
 pub fn state_lines(gs: &GameState) -> Vec<String> {
     let mut lines = Vec::new();
     let p = match gs.player.as_ref() {

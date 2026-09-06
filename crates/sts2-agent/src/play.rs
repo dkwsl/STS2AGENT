@@ -64,9 +64,6 @@ pub async fn run_play(
         }
 
         // 3. LLM 决策
-        let keywords = crate::knowledge::extract_keywords(&gs);
-        let knowledge =
-            crate::knowledge::search_knowledge(&keywords, &config.storage.knowledge_dir);
         let game_knowledge =
             crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
         let messages = build_messages(
@@ -77,11 +74,6 @@ pub async fn run_play(
             None,
             true,
             None,
-            if knowledge.is_empty() {
-                None
-            } else {
-                Some(&knowledge)
-            },
             if game_knowledge.is_empty() {
                 None
             } else {
