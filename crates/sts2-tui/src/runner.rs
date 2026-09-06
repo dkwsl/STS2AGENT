@@ -147,7 +147,7 @@ enum UserIntent {
     Reject,
     Interrupt,
     Quit,
-    /// 进入自主模式："你自己打""这层你来"等。
+    /// 进入自主模式：用户明确说了"自己打"等。
     AutoPlay,
     Chat(String),
 }
@@ -210,7 +210,7 @@ pub async fn run(
     // 首次只更新状态，不自动发起 LLM 分析——等用户指令
     state.push_chat(
         MsgRole::System,
-        "已连接。输入消息开始对话（如\"分析一下\"或\"你自己打\"）。".into(),
+        "已连接。输入消息开始对话（如\"分析一下\"或\"自己打\"）。".into(),
     );
     state.session_id = session.id.clone();
 
@@ -431,8 +431,8 @@ async fn handle_backend_msg(
                     state.game_state = gs;
                     state.last_state_json = current_sj.clone();
                 }
-                // 自主模式或有 pending actions: 用新状态重新分析
-                if (state.auto_mode || !pending_actions.is_empty()) && !current_sj.is_empty() {
+                // 只有自主模式才用新状态重新分析
+                if state.auto_mode && !current_sj.is_empty() {
                     let gs: GameState = serde_json::from_str(&current_sj).unwrap_or_default();
                     if !matches!(
                         gs.state_type,
@@ -537,42 +537,14 @@ async fn handle_backend_msg(
                     }
                 }
             } else {
-                // auto_mode 下有 action 但 execute_actions 不知何故为 false → 仍然执行
-                if !action_lines.is_empty() && state.auto_mode {
-                    state.execute_actions = true;
-                    // 重新走执行路径
-                    let first_line = action_lines[0].clone();
-                    match parse::parse_action(&first_line) {
-                        Ok(action) => {
-                            *pending_actions = action_lines[1..].to_vec();
-                            *mode = Mode::Executing;
-                            state.progress = Some(format!("执行 {}…", action.tool));
-                            let mcp2 = mcp.clone();
-                            let bt_tx2 = bt_tx.clone();
-                            let tool = action.tool;
-                            let args = action.args;
-                            tokio::spawn(async move {
-                                tokio::time::sleep(Duration::from_secs(2)).await;
-                                let mut m = mcp2.lock().await;
-                                let result = m.call_tool(&tool, args).await;
-                                let (success, message) = match result {
-                                    Ok(r) => (true, r.chars().take(120).collect()),
-                                    Err(e) => (false, format!("{e:#}")),
-                                };
-                                let _ = bt_tx2.send(Backend::ExecDone { success, message });
-                            });
-                            full_text.clear();
-                            return false;
-                        }
-                        Err(e) => {
-                            state.push_chat(MsgRole::System, format!("解析失败: {e:#}"));
-                        }
-                    }
-                }
+                // 没有 ACTION 行，或 execute_actions 为 false
+                // auto_mode 下 LLM 没给 ACTION = 它认为该停了 → 退出自主模式
                 if state.auto_mode && action_lines.is_empty() {
                     state.auto_mode = false;
                     state.task = None;
+                    state.push_chat(MsgRole::System, "自主模式结束。".into());
                 }
+                // 非 auto_mode 时执行权限只持续一轮，用完即关
                 state.execute_actions = state.auto_mode;
                 *mode = Mode::Idle;
                 state.last_poll = std::time::Instant::now();
@@ -695,8 +667,8 @@ async fn handle_backend_msg(
                 return false;
             }
 
-            // 判断是否需要自动分析
-            if !state.auto_mode && pending_actions.is_empty() {
+            // 只有自主模式才继续自动分析（执行完一步后取新状态继续）
+            if !state.auto_mode {
                 *mode = Mode::Idle;
                 state.progress = None;
                 return false;
@@ -738,11 +710,8 @@ async fn handle_backend_msg(
             // 核心：状态变化必须打断当前 LLM 流，丢弃输出，用新状态重新分析
             abort_current_llm(state, bt_rx, full_text);
 
-            // 判断是否需要自动分析：
-            // - auto_mode = true（自主模式"你自己打"）
-            // - 或者有 pending_actions（多步指令中）
-            if !state.auto_mode && pending_actions.is_empty() {
-                // 不需要自动分析，回到 Idle 等用户
+            // 判断是否需要自动分析：只有自主模式（用户明确说了"自己打"）才持续自动操作
+            if !state.auto_mode {
                 *mode = Mode::Idle;
                 state.progress = None;
                 return false;
@@ -817,9 +786,9 @@ async fn handle_user_intent(
             start_decision(&gs, &sj, config, llm, bt_tx, history, Some(text), zh, state);
         }
         UserIntent::Confirm => {
+            // 确认执行：只执行本轮 ACTION，不进入持续自主模式
             history.push(decide::ChatTurn::User(text.to_string()));
-            state.auto_mode = true;
-            state.execute_actions = true;
+            state.execute_actions = true; // 临时开启，执行完一轮后自动关闭
             state.task = Some(text.to_string());
             state.pending_action = None;
             *mode = Mode::Streaming;
@@ -839,7 +808,6 @@ async fn handle_user_intent(
         UserIntent::Reject => {
             history.push(decide::ChatTurn::User(text.to_string()));
             state.pending_action = None;
-            state.auto_mode = false;
             state.execute_actions = false;
             state.task = None;
             *mode = Mode::FetchingState;
@@ -863,10 +831,10 @@ async fn handle_user_intent(
             start_decision(&gs, &sj, config, llm, bt_tx, history, Some(text), zh, state);
         }
         UserIntent::Chat(msg) => {
+            // 纯对话：不给执行权限，agent 只做分析/回答，不操作游戏
             history.push(decide::ChatTurn::User(msg.clone()));
-            state.auto_mode = true;
-            state.execute_actions = true;
-            state.task = Some(msg.clone());
+            state.execute_actions = false;
+            state.task = None;
             *mode = Mode::Streaming;
             state.progress = Some("LLM 回复中…".into());
             state.streaming_text.clear();
@@ -913,7 +881,7 @@ async fn llm_parse_intent(
          - REJECT: 玩家否决当前建议或要求换一个（如\"不\"\"换一个\"\"不要这样\"\"不好\"）\n\
          - QUIT: 玩家想退出程序（如\"退出\"\"退出吧\"\"退出喵\"\"quit\"\"结束\"）\n\
          - INTERRUPT: 玩家想打断当前正在进行的 LLM 回复（如\"打断\"\"停\"\"stop\"）\n\
-         - AUTOPLAY: 玩家让 Agent 自主操作游戏（如\"你自己打\"\"这层你来\"\"自动打\"\"交给你了\"\"你来\"）\n\
+         - AUTOPLAY: 玩家明确让 Agent 自主操作游戏。只匹配「自己打」「自己打这层」「自己打这局」「自己打这场」等以「自己打」为核心的指令。不要把「你来」「交给你」「自动」「帮我打」等模糊表述归为 AUTOPLAY——那些只是对话，不触发自主操作。\n\
          - CHAT: 其他一切情况——玩家在与 Agent 对话、问问题、给具体操作指令\n\n\
          当前待确认动作: {pending_desc}\n\n\
          只回复分类名称（CONFIRM/REJECT/QUIT/INTERRUPT/AUTOPLAY/CHAT），不要任何其他文字。"
@@ -944,14 +912,8 @@ fn fallback_parse_intent(text: &str) -> UserIntent {
     if lower.contains("退出") || lower == "quit" || lower == "exit" {
         return UserIntent::Quit;
     }
-    // 自主模式
-    if trimmed.contains("你自己")
-        || trimmed.contains("你来")
-        || trimmed.contains("自动打")
-        || trimmed.contains("交给你")
-        || trimmed == "自动"
-        || lower == "auto"
-    {
+    // 自主模式：只认「自己打」类，其余一律当对话
+    if trimmed.contains("自己打") {
         return UserIntent::AutoPlay;
     }
     if trimmed == "打断" || trimmed == "停" || lower == "stop" || lower == "interrupt" {

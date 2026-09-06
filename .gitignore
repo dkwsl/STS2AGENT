@@ -20,3 +20,4 @@ config/local.toml
 .idea/
 .vscode/
 .DS_Store
+data/logs/

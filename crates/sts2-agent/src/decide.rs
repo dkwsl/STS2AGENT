@@ -33,6 +33,15 @@ pub async fn run_decide(
 
     eprintln!("[2/3] 获取游戏状态...");
     let state_json = mcp.get_game_state("json").await?;
+    eprintln!("[诊断] get_game_state 返回 {} 字节", state_json.len());
+    if state_json.len() < 800 {
+        eprintln!("[诊断] 完整内容:\n{state_json}");
+    } else {
+        eprintln!(
+            "[诊断] 前 800 字符:\n{}",
+            state_json.chars().take(800).collect::<String>()
+        );
+    }
     mcp.shutdown().await.ok();
 
     eprintln!("[3/3] 请求 LLM 决策...");
@@ -113,10 +122,11 @@ pub fn build_messages(
 - 你绝对不能在没有玩家明确指令的情况下输出 ACTION 行。
 - 你绝对不能根据"上一轮的自主模式""之前玩家说过的话""对话历史"推断玩家可能想让你操作——除非玩家在本轮明确说了。
 - 你给的建议（分析、推荐）只是文字，不能带 ACTION 行，除非：
-  A. 玩家本轮说了具体操作指令（如"出第二张牌""结束回合""放弃这把""去商店"）。
-  B. 玩家本轮说了进入自主模式的指令（如"你自己打""这层你来"）。
+  A. 玩家本轮说了具体操作指令（如"出第二张牌""结束回合""放弃这把""去商店""执行"）。
+  B. 玩家本轮明确说了"自己打"（如"自己打""自己打这层""自己打这局""自己打这场"）——这是唯一能触发自主模式的指令。
 - "本轮"指的是当前这条玩家消息。如果玩家本轮没给指令，你就只给文字分析，不附 ACTION 行。
 - 如果不确定玩家是否在下达指令，就当作对话回复，不附 ACTION 行。
+- 自主模式下你会连续操作直到任务完成；非自主模式下每次只执行玩家本轮指令的一次操作，执行完即停。
 
 战斗决策要求——非常重要：
 - 出牌前必须分析手牌、敌人意图、能量和牌组。不要不经分析就给出 ACTION。
@@ -125,9 +135,9 @@ pub fn build_messages(
 - 考虑敌人意图：攻击意图时优先防御，Buff/Debuff/Sleep 意图时优先输出。
 
 明确指令的例子（会触发执行）：
-  "出第二张牌" "结束回合" "你自己打" "放弃这把开新的" "执行" "就这样做"
+  "出第二张牌" "结束回合" "自己打" "自己打这层" "自己打这局" "放弃这把开新的" "执行" "就这样做"
 不是明确指令的例子（只是对话，不要输出 ACTION）：
-  "你觉得呢" "为什么" "该怎么打" "分析一下" "嗯"
+  "你觉得呢" "为什么" "该怎么打" "分析一下" "嗯" "你来吧" "交给你" "自动打"
 
 游戏动作规则（工具名严格按以下拼写）：
 - 战斗: 出牌 combat_play_card(card_index, target) / 用药水 use_potion(slot, target) / 结束回合 combat_end_turn()
@@ -204,7 +214,7 @@ pub fn build_messages(
             }
             _ => {
                 if auto_mode {
-                    format!("{state_part}{knowledge_part}{notes_part}{task_part}\n\n你正在自主模式中，玩家已授权你操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行）。")
+                    format!("{state_part}{knowledge_part}{notes_part}{task_part}\n\n玩家说了「自己打」，已进入自主模式，你被授权连续操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行），直到任务完成或玩家喊停。")
                 } else {
                     format!("{state_part}{knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
                 }

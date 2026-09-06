@@ -18,12 +18,20 @@ pub struct McpClient {
 
 impl McpClient {
     /// 拉起 MCP server 子进程并连接其 stdio。
+    /// server 的 stderr 重定向到 data/logs/mcp.log（便于排查，不搞乱 TUI）。
     pub fn spawn(command: &str, args: &[String]) -> Result<Self> {
+        let _ = std::fs::create_dir_all("data/logs");
+        let stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("data/logs/mcp.log")
+            .map(Stdio::from)
+            .unwrap_or(Stdio::null());
         let mut child = Command::new(command)
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null()) // 丢弃 stderr，防止 Python 输出搞乱 TUI
+            .stderr(stderr)
             .spawn()
             .context(format!("failed to spawn MCP server: {command}"))?;
 

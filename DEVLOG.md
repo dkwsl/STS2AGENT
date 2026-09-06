@@ -377,3 +377,61 @@ cargo test --workspace
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
 - `--decide --mock` api_key 从 .env 正确加载。
+
+---
+
+## 真实 MCP 连接修复（已完成）
+
+### 现象
+真实 MCP 模式（非 `--mock`）下 agent 读不到游戏状态：`get_game_state` 返回 7 字节 `"Error:"`，状态面板空，Agent 说看不到状态。
+
+### 根因
+上一个 agent 在调试 WSL→Windows 网络时配置了 `netsh interface portproxy` 规则（`0.0.0.0:15526 → 127.0.0.1:15526`），该规则持久化在 Windows 注册表，**重启后仍然存在**。这条规则导致：
+
+1. portproxy 在 `0.0.0.0:15526` 监听（由 `svchost.exe` 占用），拦截所有到 15526 的连接。
+2. portproxy 转发到 `127.0.0.1:15526`，但游戏 Mod 的 `Initialize()` 未执行（游戏日志无 `[STS2 MCP]`），`127.0.0.1:15526` 无人监听。
+3. 连接挂起 → server.py 的 httpx 10 秒超时 → `ReadTimeout`（字符串表示为空）→ `_handle_error` 返回 `"Error:"`。
+4. agent 把 `"Error:"` 当作状态 JSON 反序列化失败 → 空状态。
+
+> 注：当前架构下 `win_server.py`（WSL 文件）由 `powershell.exe` 调用 **Windows 端 python** 执行，server.py 在 Windows 端用 `localhost:15526` 直连游戏 Mod，**不需要 portproxy**。portproxy 是上一个 agent 早期尝试 WSL 直连 Mod 时加的，后来改用了 powershell.exe 方案但没清理残留规则。
+
+### 修复
+1. **删除残留 portproxy 规则**（Windows PowerShell 管理员）：
+   ```powershell
+   netsh interface portproxy delete v4tov4 listenport=15526 listenaddress=0.0.0.0
+   ```
+2. **完全退出并重启游戏**，让 Mod 的 `Initialize()` 重新执行、HttpListener 绑定 `localhost:15526`。
+3. 确认游戏日志出现 `[STS2 MCP] v... server started on http://localhost:15526/`，即 Mod 正常启动。
+
+### agent 端改动
+- `client.rs` spawn：MCP server 的 stderr 从 `Stdio::null()` 改为重定向到 `data/logs/mcp.log`，便于排查（之前 Python server 的错误/日志完全不可见）。
+- `decide.rs`：`--decide` 模式在调 LLM 前打印 `get_game_state` 返回的字节数和前 800 字符（诊断用，定位完成后保留）。
+- 曾加过 get_game_state 重试 3 次的逻辑，后回退（该场景重试只会让每次失败等 30 秒，反而碍事）。
+
+### 验证
+- 删除 portproxy + 重启游戏后，`cargo run -p sts2-tui -- --decide` 能读到真实游戏状态 JSON。
+- `data/logs/mcp.log` 可见 server.py 的请求日志。
+
+### 教训
+- `netsh portproxy` 规则持久化在注册表，重启不丢；调试结束后必须显式 `delete` 清理。
+- WSL 调 `powershell.exe` 跑 Windows python 时，python 进程在 Windows 端，其 `localhost` 指向 Windows，不需要额外端口转发。
+
+---
+
+## 自主模式判定严格化（已完成）
+
+### 背景
+原自主模式（auto_mode）判定过宽：`UserIntent::Confirm`（"执行"/"继续"）和 `UserIntent::Chat`（任意对话如"分析一下"）都会设 `auto_mode=true`+`execute_actions=true`，导致 agent 在用户只说了一句话后持续自动操作游戏，不符合用户"只有明确说'自己打'才操作"的要求。
+
+### 改动
+1. **意图分类**（`llm_parse_intent`/`fallback_parse_intent`）：AUTOPLAY 触发词从"你来""交给你""自动打"等宽泛词收紧为**只认"自己打"**（含"自己打这层""自己打这局""自己打这场"）。
+2. **handle_user_intent**：
+   - `Confirm`（"执行"/"继续"）：只执行本轮一次（`execute_actions=true` 但不设 `auto_mode`），执行完自动关闭。
+   - `Chat`（纯对话）：不给执行权限（`execute_actions=false`），agent 只做分析/回答。
+   - `AutoPlay`（"自己打"）：保持 `auto_mode=true`+`execute_actions=true`，持续操作直到完成或用户打断。
+3. **StreamDone**：执行完一轮后，非 auto_mode 时 `execute_actions=false`；auto_mode 下 LLM 没给 ACTION 则退出自主模式。
+4. **StateChange/StateReady**：只有 `auto_mode` 才触发自动重新分析（移除 `pending_actions` 作为独立触发条件——多步队列只在 auto_mode 期间才有）。
+5. **system prompt**（decide.rs）：强化自主模式触发说明——只有"自己打"类指令触发自主模式；非自主模式每次只执行一次操作。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。

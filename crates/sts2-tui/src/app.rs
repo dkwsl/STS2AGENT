@@ -35,7 +35,7 @@ pub struct AppState {
     pub finished: bool,
     /// 是否自动执行 ACTION 行（true=用户指令时执行，false=仅建议）。
     pub execute_actions: bool,
-    /// 自主模式：用户说了"你自己打"等，Agent 连续操作直到用户喊停。
+    /// 自主模式：用户明确说了"自己打"，Agent 连续操作直到完成或用户喊停。
     pub auto_mode: bool,
     /// 当前任务描述（用户指令的原文），每次分析时提醒 LLM 目标。
     pub task: Option<String>,
