@@ -7,7 +7,7 @@
 use anyhow::Result;
 use std::io::Write;
 
-use sts2_core::Config;
+use sts2_core::{Config, GameState};
 use sts2_llm::{BudgetGuard, ChatMessage, LlmClient, StreamEvent};
 use sts2_mcp::McpClient;
 
@@ -42,11 +42,15 @@ pub async fn run_decide(
             state_json.chars().take(800).collect::<String>()
         );
     }
+    let gs: GameState = serde_json::from_str(&state_json).unwrap_or_default();
     mcp.shutdown().await.ok();
 
     eprintln!("[3/3] 请求 LLM 决策...");
     let llm = LlmClient::from_config(&config.model);
     let mut budget = BudgetGuard::new(config.budget.token_limit, config.budget.cost_limit_usd);
+
+    let game_knowledge =
+        crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
 
     let messages = build_messages(
         &state_json,
@@ -57,6 +61,11 @@ pub async fn run_decide(
         false,
         None,
         None,
+        if game_knowledge.is_empty() {
+            None
+        } else {
+            Some(&game_knowledge)
+        },
         None,
         zh,
     );
@@ -102,6 +111,7 @@ pub fn build_messages(
     auto_mode: bool,
     task: Option<&str>,
     knowledge: Option<&str>,
+    game_knowledge: Option<&str>,
     session_notes: Option<&str>,
     zh: bool,
 ) -> Vec<ChatMessage> {
@@ -198,6 +208,12 @@ pub fn build_messages(
         }
         _ => String::new(),
     };
+    let game_knowledge_part = match game_knowledge {
+        Some(g) if !g.is_empty() => {
+            format!("\n\n游戏数据参考（从反编译数据生成，以当前游戏状态 JSON 为准）:\n{g}")
+        }
+        _ => String::new(),
+    };
     let notes_part = match session_notes {
         Some(n) if !n.is_empty() => format!("\n\n往期经验:\n{n}"),
         _ => String::new(),
@@ -210,13 +226,13 @@ pub fn build_messages(
         };
         match user_msg {
             Some(msg) if !msg.is_empty() => {
-                format!("{state_part}{knowledge_part}{notes_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家给的是操作指令，给出 ACTION 行。")
+                format!("{state_part}{game_knowledge_part}{knowledge_part}{notes_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家给的是操作指令，给出 ACTION 行。")
             }
             _ => {
                 if auto_mode {
-                    format!("{state_part}{knowledge_part}{notes_part}{task_part}\n\n玩家说了「自己打」，已进入自主模式，你被授权连续操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行），直到任务完成或玩家喊停。")
+                    format!("{state_part}{game_knowledge_part}{knowledge_part}{notes_part}{task_part}\n\n玩家说了「自己打」，已进入自主模式，你被授权连续操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行），直到任务完成或玩家喊停。")
                 } else {
-                    format!("{state_part}{knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
+                    format!("{state_part}{game_knowledge_part}{knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
                 }
             }
         }

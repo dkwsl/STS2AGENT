@@ -431,7 +431,29 @@ cargo test --workspace
    - `AutoPlay`（"自己打"）：保持 `auto_mode=true`+`execute_actions=true`，持续操作直到完成或用户打断。
 3. **StreamDone**：执行完一轮后，非 auto_mode 时 `execute_actions=false`；auto_mode 下 LLM 没给 ACTION 则退出自主模式。
 4. **StateChange/StateReady**：只有 `auto_mode` 才触发自动重新分析（移除 `pending_actions` 作为独立触发条件——多步队列只在 auto_mode 期间才有）。
-5. **system prompt**（decide.rs）：强化自主模式触发说明——只有"自己打"类指令触发自主模式；非自主模式每次只执行一次操作。
+ 5. **system prompt**（decide.rs）：强化自主模式触发说明——只有"自己打"类指令触发自主模式；非自主模式每次只执行一次操作。
 
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
+
+---
+
+## game-knowledge 结构化知识库检索（已完成）
+
+### 背景
+用户从参考项目 [STS2-Agent](https://github.com/moong15/STS2-Agent) 引入了 `game-knowledge/` 目录（12 个 .md，1818 行），包含从游戏反编译数据生成的结构化表格：卡牌（577 张）、敌人（121 种）、药水（64 种）、事件（68 种）、角色（7 个）的索引和行为详情。
+
+### 与已有知识库的区别
+- `data/knowledge/raw/`（爬取攻略）：自然语言段落，用 `search_knowledge` 段落分块 + 关键词模糊匹配。
+- `game-knowledge/`（反编译表格）：结构化 Markdown 表格，按内部 ID 索引，用新增的 `search_game_knowledge` 按行精确匹配。
+
+### 改动
+1. **knowledge.rs 新增 `search_game_knowledge(gs, dir)`**：从 GameState 提取 card_id / enemy_id / potion_id / event_id，去对应表格文件按行匹配（大小写不敏感、忽略下划线/连字符/空格）。按状态类型附带 playbook 相关段落。总输出截断 2000 字。
+2. **config.rs 新增 `game_knowledge_dir`**（默认 `game-knowledge`），config.example.toml 同步。
+3. **decide.rs build_messages 新增 `game_knowledge` 参数**，注入 prompt（"游戏数据参考"段）。
+4. **runner.rs / play.rs / decide.rs** 三个调用点同步注入 game_knowledge。
+5. 新增 3 个测试：`game_knowledge_lookup_card` / `game_knowledge_lookup_enemy` / `normalize_id_strips_separators`。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（35 passed）。
+- `--decide --mock`：mock 初始为 map 状态，game_knowledge 返回 683 字节（playbook 决策指引段落）。进入战斗后手牌/敌人出现时会查到对应卡牌/敌人索引行。

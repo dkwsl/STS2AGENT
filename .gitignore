@@ -21,3 +21,4 @@ config/local.toml
 .vscode/
 .DS_Store
 data/logs/
+**/data/logs/

@@ -27,3 +27,4 @@ cost_limit_usd = 0.0  # 0.0 = 不限
 sessions_dir = "data/sessions"
 logs_dir = "data/logs"
 knowledge_dir = "data/knowledge/raw"
+game_knowledge_dir = "game-knowledge"

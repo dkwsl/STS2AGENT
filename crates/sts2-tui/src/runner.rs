@@ -55,6 +55,10 @@ fn start_decision(
     let knowledge =
         sts2_agent::knowledge::search_knowledge(&keywords, &config.storage.knowledge_dir);
 
+    // game-knowledge 结构化索引检索
+    let game_knowledge =
+        sts2_agent::knowledge::search_game_knowledge(gs, &config.storage.game_knowledge_dir);
+
     // K5: 读取 session 笔记
     let notes_path = format!(
         "{}/{}_notes.md",
@@ -74,6 +78,11 @@ fn start_decision(
             None
         } else {
             Some(&knowledge)
+        },
+        if game_knowledge.is_empty() {
+            None
+        } else {
+            Some(&game_knowledge)
         },
         session_notes.as_deref(),
         zh,

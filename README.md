@@ -2,7 +2,7 @@
 
 面向《杀戮尖塔 2》（Slay the Spire 2）的专用决策 Agent。玩家在游戏过程中随时获取当前回合的决策建议及解释，对局结束后可进行完整的决策链复盘分析。
 
-Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/dkwsl/STS2MCP)）读取实时状态，借助决策工具和 LLM 将决策转化为自然语言解释。
+Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/Gennadiyev/STS2MCP/)）读取实时状态，借助决策工具和 LLM 将决策转化为自然语言解释。
 
 ## 功能
 
@@ -13,6 +13,9 @@ Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/dkwsl/STS2MCP)）�
 - **Token 用量与成本统计**：精确统计每次 API 调用的 token 数与费用，支持预算上限自动中断
 - **知识库辅助**：内置 18 篇攻略，按当前局面自动检索相关策略段落注入 LLM 上下文
 - **经验笔记**：Agent 在对局中自主记录经验教训（NOTE），后续回合自动引用
+- **可自定义模型配置**：支持 OpenAI / DeepSeek / 清华平台 / 本地 vLLM 等 OpenAI 兼容接口，可配置 endpoint、api_key、上下文长度、思考模式、价格等
+- **实时进度渲染与打断**：流式输出 + 按键打断，长任务不卡顿
+- **上下文历史管理**：每会话存为 JSON，支持列出/加载/导出，非黑盒
 
 ## 系统架构
 
@@ -36,34 +39,24 @@ Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/dkwsl/STS2MCP)）�
 
 核心编排与表现层解耦：`sts2-agent` 对外暴露"事件流 + 命令"接口，任何前端（TUI/Web/桌面）只消费事件、下发命令，复用同一核心。
 
-## 前置要求
-
-- **Rust 1.85+**（含 cargo、rustfmt）
-- **杀戮尖塔 2**（Steam）+ **STS2MCP Mod** 已安装并启用
-- **LLM API Key**：支持 OpenAI / DeepSeek / 清华平台 / 本地 vLLM 等 OpenAI 兼容接口
-- **Python 3**（仅真实 MCP 模式需要，用于运行 STS2MCP 的 Python MCP server）
-
 ## 快速开始
 
-### 1. 克隆并构建
+### 1. 构建
 
 ```bash
-git clone https://github.com/dkwsl/STS2AGENT.git
-cd STS2AGENT
 cargo build --workspace
 ```
 
 ### 2. 配置
 
 ```bash
-# 复制配置模板
 cp config/config.example.toml config/config.toml
 cp config/.env.example config/.env
 ```
 
 编辑 `config/config.toml`：
 - `[model]`：填入 endpoint、model、价格等（api_key 留空，从 .env 读）
-- `[mcp]`：配置 MCP server 启动命令（见下方"WSL 环境配置"）
+- `[mcp]`：配置 MCP server 启动命令
 
 编辑 `config/.env`：
 ```
@@ -86,41 +79,6 @@ cargo run -p sts2-tui -- --play --mock --zh --max-turns 6
 ```
 
 `--mock` 使用内置的 Rust Mock MCP server（脚本化战斗），无需游戏即可端到端演示。去掉 `--mock` 连接真实游戏。
-
-### 4. 验证配置
-
-```bash
-cargo run -p sts2-tui -- --check
-# 输出示例: config ok: model=gpt-4o-mini, mcp.command=uv
-```
-
-## WSL 环境配置
-
-如果游戏运行在 Windows 上、Agent 运行在 WSL 中，需要通过 `powershell.exe` 在 Windows 端启动 MCP server，使其能访问 Windows 的 `localhost:15526`（游戏 Mod 的 HTTP API）。
-
-### 配置方法
-
-1. 在 WSL 文件系统中放置 `win_server.py`（从 WSL UNC 路径加载 server.py，用 Windows Python 执行）：
-
-```python
-# win_server.py
-import os, sys
-mcp_dir = r"\\wsl.localhost\Ubuntu-24.04\home\<user>\sts2mcp\STS2MCP\mcp"
-server_path = os.path.join(mcp_dir, "server.py")
-with open(server_path, encoding="utf-8") as f:
-    code = f.read()
-exec(compile(code, server_path, "exec"), {"__name__": "__main__"})
-```
-
-2. 在 `config/config.toml` 中配置：
-
-```toml
-[mcp]
-command = "powershell.exe"
-args = ["-c", "python '\\\\wsl.localhost\\Ubuntu-24.04\\home\\<user>\\sts2mcp\\win_server.py'"]
-```
-
-> `powershell.exe` 调用的是 **Windows 端的 Python**，其 `localhost` 指向 Windows，可直接访问游戏 Mod 的 HTTP API，无需额外端口转发。
 
 ## 使用方式
 
@@ -262,7 +220,3 @@ cargo test --workspace                     # 测试 (32 项)
 | 序列化 | serde / serde_json |
 | 配置 | toml + dotenvy |
 | CLI 参数 | clap |
-
-## 许可证
-
-MIT
