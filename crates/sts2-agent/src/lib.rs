@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod decide;
+pub mod knowledge;
 pub mod parse;
 pub mod play;
 pub mod storage;

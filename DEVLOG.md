@@ -321,3 +321,36 @@ cargo test --workspace
 
 - TUI 对话模式需在交互式终端中运行验证（管道模式无法进入 raw mode）。
 - 下一步方向：commit 推送？加会话历史保存/加载（R5）？真实 Mod 联调？
+
+---
+
+## 知识库检索 + menu_select 类型修复 + --play auto_mode 修复（已完成）
+
+> 接替上一个 agent（对话超限）。上一个 agent 留下未提交改动：menu_select 类型修复 + 知识库功能。本次验证、补全并提交。
+
+### 步骤 1：验证并补全 menu_select 类型修复
+- **问题**：真实 MCP server（Python pydantic）要求 `menu_select` 的 `option` 参数为字符串，但 LLM 输出整数 0 导致 `string_type` 校验报错。
+- **修复**（上一个 agent 已做）：`parse.rs` 的 `normalize_args` 把 `option`/`tool` 参数强制转字符串。
+- **补全**：新增单测 `menu_select_option_coerced_to_string`，覆盖 int→string、原生字符串、`crystal_sphere_set_tool` 的 tool 参数。
+- 验证三处 `call_tool`（runner.rs:526/557/626、play.rs:129）的 args 均经 `parse_action`→`normalize_args`，修复路径完整。
+
+### 步骤 2：修复 --play 模式 auto_mode bug（本次新发现）
+- **现象**：`--play --mock` 端到端验证时，LLM 给出完美分析但**不输出 ACTION 行**，2 轮均"解析失败跳过"，对局无法推进。
+- **根因**：`play.rs:73` 调 `build_messages` 时 `auto_mode=false`，触发 system prompt 的"不要输出 ACTION 行，只给文字建议"分支——这是对话模式的正确行为，但 `--play` 是自动对局模式，应 `auto_mode=true`。
+- **修复**：`play.rs` 的 `auto_mode` 改为 `true`，并同步注入知识库检索（与 runner 一致）。
+- **验证**：重跑 `--play --mock --max-turns 3`：第 1 轮 LLM 选休息点(node 1)→Mock 报错只支持 node 0→第 2 轮 LLM 从失败中学习改选 node 0→成功进入战斗（历史反馈机制生效）。第 3 轮因 LLM 服务端 503 跳过（非代码问题）。
+
+### 步骤 3：知识库检索功能（上一个 agent 已做，本次验证）
+- `knowledge.rs`：从 `data/knowledge/raw/*.md` 按关键词检索（含中英同义词扩展），返回 top 5 段落（≤1500 字）。`extract_keywords` 从 GameState 提取角色/敌人/手牌/遗物/药水关键词。
+- `scripts/knowledge/fetch.py`：爬取 slaythespire-2.com 攻略站 18 篇攻略到 `data/knowledge/raw/`（已运行，data/ 已 gitignore）。
+- `decide.rs`：`build_messages` 新增 `knowledge`/`session_notes` 参数，注入知识库参考与往期经验。
+- LLM 可输出 `NOTE:` 行记录经验，`parse.rs` 的 `extract_notes`/`is_note_line` 提取并追加到 `{session_id}_notes.md`，后续轮次注入 prompt。
+- `config.rs`：新增 `knowledge_dir` 配置（默认 `data/knowledge/raw`）。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（32 passed）。
+- `--play --mock --zh --max-turns 3` 端到端：对局从地图推进到战斗，知识库注入生效（LLM 引用 Burning Blood 回血机制），会话存盘正常。
+
+### 注意事项
+- `config/config.toml` 含明文 API key（已 gitignore，未入库）。规范上 key 应放 `config/.env`（已 gitignore）或 `secret/`，建议后续迁移。
+- T1–T10 TUI 待修问题（PLAN.md §14）尚未处理，部分可能已被 "Major overhaul" commit 修复，待核查。

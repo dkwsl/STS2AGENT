@@ -59,6 +59,8 @@ pub struct StorageConfig {
     pub sessions_dir: String,
     #[serde(default = "default_logs_dir")]
     pub logs_dir: String,
+    #[serde(default = "default_knowledge_dir")]
+    pub knowledge_dir: String,
 }
 
 fn default_sessions_dir() -> String {
@@ -67,4 +69,8 @@ fn default_sessions_dir() -> String {
 
 fn default_logs_dir() -> String {
     "data/logs".to_string()
+}
+
+fn default_knowledge_dir() -> String {
+    "data/knowledge/raw".to_string()
 }

@@ -49,6 +49,19 @@ fn start_decision(
     state.current_cancel = cancel.clone();
     state.decision_state_json = state_json.to_string();
     let summary = state_summary(gs);
+
+    // K5: 知识库检索
+    let keywords = crate::app::extract_keywords_external(gs);
+    let knowledge =
+        sts2_agent::knowledge::search_knowledge(&keywords, &config.storage.knowledge_dir);
+
+    // K5: 读取 session 笔记
+    let notes_path = format!(
+        "{}/{}_notes.md",
+        config.storage.sessions_dir, state.session_id
+    );
+    let session_notes = std::fs::read_to_string(&notes_path).ok();
+
     let messages = decide::build_messages(
         state_json,
         &config.model.model,
@@ -57,6 +70,12 @@ fn start_decision(
         user_msg,
         state.auto_mode,
         state.task.as_deref(),
+        if knowledge.is_empty() {
+            None
+        } else {
+            Some(&knowledge)
+        },
+        session_notes.as_deref(),
         zh,
     );
     match llm.chat_stream(&messages) {
@@ -193,6 +212,7 @@ pub async fn run(
         MsgRole::System,
         "已连接。输入消息开始对话（如\"分析一下\"或\"你自己打\"）。".into(),
     );
+    state.session_id = session.id.clone();
 
     let mut should_quit = false;
     let mut last_draw = std::time::Instant::now();
@@ -441,6 +461,31 @@ async fn handle_backend_msg(
             }
 
             // 状态一致，正常处理 LLM 输出
+            // 提取 NOTE 行（LLM 自主经验笔记）
+            let notes = parse::extract_notes(full_text);
+            if !notes.is_empty() {
+                let notes_path = format!(
+                    "{}/{}_notes.md",
+                    config.storage.sessions_dir, state.session_id
+                );
+                let notes_content = notes
+                    .iter()
+                    .map(|n| format!("- {n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                // 追加到 session 笔记文件
+                if let Some(parent) = std::path::Path::new(&notes_path).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let mut existing = std::fs::read_to_string(&notes_path).unwrap_or_default();
+                if !existing.is_empty() && !existing.ends_with('\n') {
+                    existing.push('\n');
+                }
+                existing.push_str(&notes_content);
+                existing.push('\n');
+                let _ = std::fs::write(&notes_path, &existing);
+            }
+
             let action_lines: Vec<String> = full_text
                 .lines()
                 .filter(|l| parse::is_action_line(l))
@@ -449,7 +494,7 @@ async fn handle_backend_msg(
 
             let chat_text: String = full_text
                 .lines()
-                .filter(|l| !parse::is_action_line(l))
+                .filter(|l| !parse::is_action_line(l) && !parse::is_note_line(l))
                 .collect::<Vec<_>>()
                 .join("\n")
                 .trim()

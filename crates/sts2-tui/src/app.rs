@@ -41,6 +41,8 @@ pub struct AppState {
     pub task: Option<String>,
     /// 当前 LLM 流的 cancel token，打断时用。
     pub current_cancel: CancellationToken,
+    /// 当前会话 ID（用于读取 session 笔记）。
+    pub session_id: String,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
     pub last_state_json: String,
     /// LLM 正在分析的状态 JSON（决策开始时的快照）。
@@ -85,6 +87,7 @@ impl AppState {
             auto_mode: false,
             task: None,
             current_cancel: CancellationToken::new(),
+            session_id: String::new(),
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),
@@ -144,6 +147,11 @@ impl AppState {
 /// 计算字符串的显示宽度（ASCII=1，CJK=2，其他=1）。
 pub fn display_width(s: &str) -> u16 {
     s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
+}
+
+/// K5: 从 GameState 提取关键词（转发到 sts2_agent::knowledge）。
+pub fn extract_keywords_external(gs: &GameState) -> Vec<String> {
+    sts2_agent::knowledge::extract_keywords(gs)
 }
 
 pub fn state_lines(gs: &GameState) -> Vec<String> {

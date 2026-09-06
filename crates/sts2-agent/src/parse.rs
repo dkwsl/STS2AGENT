@@ -23,7 +23,27 @@ pub fn parse_action(text: &str) -> Result<ParsedAction> {
     parse_single_action(action_line)
 }
 
-/// 判断一行是否是 ACTION 行（含 "ACTION:" 前缀，或匹配 "tool_name | key=value" 模式）。
+/// 从 LLM 输出中提取 NOTE 行（LLM 自主记录的经验）。
+pub fn extract_notes(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| l.trim_start().to_uppercase().starts_with("NOTE:"))
+        .map(|l| {
+            l.trim_start()
+                .split_once(':')
+                .map(|x| x.1)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// 判断一行是否是 NOTE 行。
+pub fn is_note_line(line: &str) -> bool {
+    line.trim_start().to_uppercase().starts_with("NOTE:")
+}
+
 pub fn is_action_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     if trimmed.to_uppercase().starts_with("ACTION:") {
@@ -108,6 +128,27 @@ fn normalize_args(tool: &str, args: &mut serde_json::Map<String, Value>) {
     if let Some(Value::String(s)) = args.get("slot") {
         if let Ok(n) = s.parse::<i64>() {
             args.insert("slot".to_string(), Value::Number(n.into()));
+        }
+    }
+    // option 必须是字符串（menu_select 的 option 参数，LLM 可能输出整数）
+    if let Some(v) = args.get("option") {
+        if !v.is_string() {
+            let s = match v {
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                _ => v.to_string(),
+            };
+            args.insert("option".to_string(), Value::String(s));
+        }
+    }
+    // tool 参数必须是字符串
+    if let Some(v) = args.get("tool") {
+        if !v.is_string() {
+            let s = match v {
+                Value::Number(n) => n.to_string(),
+                _ => v.to_string(),
+            };
+            args.insert("tool".to_string(), Value::String(s));
         }
     }
 }
@@ -244,10 +285,52 @@ mod tests {
     }
 
     #[test]
+    fn menu_select_option_coerced_to_string() {
+        // LLM 可能输出整数 option，但 MCP server 要求字符串（pydantic string_type）
+        let a = parse_action("ACTION: menu_select | option=0").unwrap();
+        assert_eq!(a.tool, "menu_select");
+        assert_eq!(a.args["option"], "0");
+        assert!(a.args["option"].is_string());
+
+        // 直接传字符串应保持不变
+        let a = parse_action("ACTION: menu_select | option=main_menu").unwrap();
+        assert_eq!(a.args["option"], "main_menu");
+
+        // crystal_sphere 的 tool 参数同样要求字符串
+        let a = parse_action("ACTION: crystal_sphere_set_tool | tool=big").unwrap();
+        assert_eq!(a.args["tool"], "big");
+    }
+
+    #[test]
     fn case_insensitive_prefix() {
         let text = "action: combat_end_turn\nreason: done";
         let a = parse_action(text).unwrap();
         assert_eq!(a.tool, "combat_end_turn");
+    }
+
+    #[test]
+    fn extract_notes_basic() {
+        let text =
+            "分析中...\nNOTE: Jaw Worm 低血量会狂暴\nACTION: combat_end_turn\nNOTE: 这把缺防御牌";
+        let notes = extract_notes(text);
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].contains("Jaw Worm"));
+        assert!(notes[1].contains("缺防御牌"));
+    }
+
+    #[test]
+    fn extract_notes_empty() {
+        let text = "只是分析，没有笔记";
+        let notes = extract_notes(text);
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn is_note_line_check() {
+        assert!(is_note_line("NOTE: test"));
+        assert!(is_note_line("  note: test"));
+        assert!(!is_note_line("ACTION: test"));
+        assert!(!is_note_line("这只是个注释"));
     }
 
     #[test]

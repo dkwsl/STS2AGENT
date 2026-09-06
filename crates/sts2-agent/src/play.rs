@@ -64,13 +64,22 @@ pub async fn run_play(
         }
 
         // 3. LLM 决策
+        let keywords = crate::knowledge::extract_keywords(&gs);
+        let knowledge =
+            crate::knowledge::search_knowledge(&keywords, &config.storage.knowledge_dir);
         let messages = build_messages(
             &state_json,
             &config.model.model,
             &[],
             &summary,
             None,
-            false,
+            true,
+            None,
+            if knowledge.is_empty() {
+                None
+            } else {
+                Some(&knowledge)
+            },
             None,
             zh,
         );

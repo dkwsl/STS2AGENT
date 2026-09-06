@@ -47,6 +47,8 @@ pub async fn run_decide(
         None,
         false,
         None,
+        None,
+        None,
         zh,
     );
     let mut rx = llm.chat_stream(&messages)?;
@@ -90,6 +92,8 @@ pub fn build_messages(
     user_msg: Option<&str>,
     auto_mode: bool,
     task: Option<&str>,
+    knowledge: Option<&str>,
+    session_notes: Option<&str>,
     zh: bool,
 ) -> Vec<ChatMessage> {
     let lang = if zh {
@@ -160,7 +164,7 @@ pub fn build_messages(
 - 用纯文本回复，不要使用 Markdown。回复简短：只输出关键分析和决策理由。
 - 如果有行动，附 ACTION 行（可多行）：ACTION: <tool_name> | <param>=<value>
 - 如果状态是 unknown，直接说"等待游戏加载"。
-{lang}"#
+- 你可以写 NOTE: <内容> 行来记录当前对局的经验教训（如"Jaw Worm 低血量会狂暴""这把缺防御"）。这些笔记会在后续分析中提醒你，帮助你改进决策。只在对局中有重要发现时才写 NOTE。{lang}"#
     ));
 
     let mut msgs = vec![system];
@@ -178,6 +182,16 @@ pub fn build_messages(
         Some(t) if !t.is_empty() => format!("\n\n当前任务: {t}\n思考: 当前状态离完成任务还差什么？下一步做什么能推进任务？\n有些操作需要确认（如选完角色后需要点 confirm 开始游戏，选完遗物后需要 proceed）。注意当前 state_type 是什么，检查是否需要确认/推进操作。"),
         _ => String::new(),
     };
+    let knowledge_part = match knowledge {
+        Some(k) if !k.is_empty() => {
+            format!("\n\n知识库参考（可能来自旧版本，以当前游戏状态 JSON 为准）:\n{k}")
+        }
+        _ => String::new(),
+    };
+    let notes_part = match session_notes {
+        Some(n) if !n.is_empty() => format!("\n\n往期经验:\n{n}"),
+        _ => String::new(),
+    };
     let user_content = {
         let state_part = if state_summary.is_empty() {
             format!("当前游戏状态:\n```json\n{state_json}\n```")
@@ -186,13 +200,13 @@ pub fn build_messages(
         };
         match user_msg {
             Some(msg) if !msg.is_empty() => {
-                format!("{state_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家给的是操作指令，给出 ACTION 行。")
+                format!("{state_part}{knowledge_part}{notes_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家给的是操作指令，给出 ACTION 行。")
             }
             _ => {
                 if auto_mode {
-                    format!("{state_part}{task_part}\n\n你正在自主模式中，玩家已授权你操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行）。")
+                    format!("{state_part}{knowledge_part}{notes_part}{task_part}\n\n你正在自主模式中，玩家已授权你操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行）。")
                 } else {
-                    format!("{state_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
+                    format!("{state_part}{knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
                 }
             }
         }
