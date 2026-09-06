@@ -11,7 +11,7 @@ Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/Gennadiyev/STS2MCP/
 - **自主模式**：说"自己打"让 Agent 连续自动操作一整局，随时可打断
 - **对局复盘**：加载历史会话，逐回合回放状态→决策→解释的完整链路
 - **Token 用量与成本统计**：精确统计每次 API 调用的 token 数与费用，支持预算上限自动中断
-- **知识库辅助**：内置 18 篇攻略，按当前局面自动检索相关策略段落注入 LLM 上下文
+- **知识库辅助**：两层知识体系——`game-knowledge/` 结构化索引（577 张卡牌、121 种敌人、64 种药水、68 个事件，从游戏反编译数据生成，按 ID 精确查表）+ `data/knowledge/raw/` 攻略文章（按关键词模糊检索），均根据当前局面自动注入 LLM 上下文
 - **经验笔记**：Agent 在对局中自主记录经验教训（NOTE），后续回合自动引用
 - **可自定义模型配置**：支持 OpenAI / DeepSeek / 清华平台 / 本地 vLLM 等 OpenAI 兼容接口，可配置 endpoint、api_key、上下文长度、思考模式、价格等
 - **实时进度渲染与打断**：流式输出 + 按键打断，长任务不卡顿
@@ -156,7 +156,8 @@ cost_limit_usd = 0.0                      # 0.0 = 不限
 [storage]
 sessions_dir = "data/sessions"
 logs_dir = "data/logs"
-knowledge_dir = "data/knowledge/raw"
+knowledge_dir = "data/knowledge/raw"        # 攻略文章目录
+game_knowledge_dir = "game-knowledge"       # 结构化游戏数据索引目录
 ```
 
 ### 切换 LLM 供应商
@@ -177,7 +178,7 @@ sts2agent/
 ├─ crates/
 │  ├─ sts2-core/        # 领域模型 (GameState/Action/Config) + serde
 │  ├─ sts2-mcp/         # MCP 客户端 + Mock MCP server (演示用)
-│  ├─ sts2-decision/    # DecisionEngine trait + 规则启发式实现
+│  ├─ sts2-decision/    # DecisionEngine trait (可插拔，预留扩展)
 │  ├─ sts2-llm/         # OpenAI 兼容 LLM 客户端 (流式/usage/价格/预算)
 │  ├─ sts2-agent/       # 编排主控 (会话/历史/取消/进度/存储/知识库)
 │  └─ sts2-tui/         # ratatui TUI 界面
@@ -186,10 +187,16 @@ sts2agent/
 │  └─ .env.example
 ├─ scripts/
 │  └─ knowledge/fetch.py  # 爬取攻略到 data/knowledge/raw/
+├─ game-knowledge/         # 结构化游戏数据索引 (反编译生成，已入库)
+│  ├─ cards.md / card-behaviors.md        # 卡牌索引 + 行为
+│  ├─ monsters.md / monster-behaviors.md  # 敌人索引 + 行为
+│  ├─ potions.md / potion-behaviors.md    # 药水索引 + 行为
+│  ├─ events.md / characters.md           # 事件 + 角色开局
+│  └─ playbook.md / agent-reference.md    # 决策流程指引
 ├─ data/                   # 运行时数据 (gitignore)
 │  ├─ sessions/            # 会话历史 JSON
 │  ├─ logs/                # 日志 (含 MCP server stderr)
-│  └─ knowledge/raw/       # 攻略知识库
+│  └─ knowledge/raw/       # 爬取的攻略文章
 ├─ Cargo.toml
 ├─ AGENTS.md               # 工作指令
 ├─ PLAN.md                 # 项目计划
@@ -203,7 +210,7 @@ cargo fmt                                  # 格式化
 cargo fmt --check                          # 格式校验
 cargo build --workspace                    # 构建
 cargo clippy --all-targets -- -D warnings  # 严格 lint
-cargo test --workspace                     # 测试 (32 项)
+cargo test --workspace                     # 测试 (35 项)
 ```
 
 每个 crate 根以 `#![forbid(unsafe_code)]` 强制禁用 unsafe。
