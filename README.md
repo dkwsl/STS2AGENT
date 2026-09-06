@@ -12,7 +12,6 @@ Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/Gennadiyev/STS2MCP/
 - **对局复盘**：加载历史会话，逐回合回放状态→决策→解释的完整链路
 - **Token 用量与成本统计**：精确统计每次 API 调用的 token 数与费用，支持预算上限自动中断
 - **知识库辅助**：`game-knowledge/` 结构化索引（577 张卡牌、121 种敌人、64 种药水、68 个事件，从游戏反编译数据生成），根据当前局面按 ID 精确查表，自动注入 LLM 上下文
-- **经验笔记**：Agent 在对局中自主记录经验教训（NOTE），后续回合自动引用
 - **可自定义模型配置**：支持 OpenAI / DeepSeek / 清华平台 / 本地 vLLM 等 OpenAI 兼容接口，可配置 endpoint、api_key、上下文长度、思考模式、价格等
 - **实时进度渲染与打断**：流式输出 + 按键打断，长任务不卡顿
 - **上下文历史管理**：每会话存为 JSON，支持列出/加载/导出，非黑盒
@@ -69,23 +68,23 @@ STS2_OPENAI_API_KEY=sk-your-key-here
 
 ```bash
 # 交互式 TUI 对话界面（推荐）
-cargo run -p sts2-tui -- --tui --mock --zh
+cargo run -p sts2-tui -- --tui --zh
 
 # 单次决策（裸文本，无需 TTY）
-cargo run -p sts2-tui -- --decide --mock --zh
+cargo run -p sts2-tui -- --decide --zh
 
 # 自动对局（裸文本）
-cargo run -p sts2-tui -- --play --mock --zh --max-turns 6
+cargo run -p sts2-tui -- --play --zh --max-turns 6
 ```
 
-`--mock` 使用内置的 Rust Mock MCP server（脚本化战斗），无需游戏即可端到端演示。去掉 `--mock` 连接真实游戏。
+加 `--mock` 可使用内置的 Rust Mock MCP server（脚本化战斗），无需游戏即可端到端演示。
 
 ## 使用方式
 
 ### TUI 交互模式
 
 ```bash
-cargo run -p sts2-tui -- --tui --mock --zh
+cargo run -p sts2-tui -- --tui --zh
 ```
 
 启动后看到状态面板（HP/能量/手牌/敌人）+ 对话面板 + 输入框。操作：
@@ -107,13 +106,13 @@ cargo run -p sts2-tui -- --tui --mock --zh
 
 ```bash
 # 单次决策
-cargo run -p sts2-tui -- --decide --mock --zh
+cargo run -p sts2-tui -- --decide --zh
 
 # 自动对局（LLM 自主决策 + 执行 + 循环）
-cargo run -p sts2-tui -- --play --mock --zh --max-turns 6
+cargo run -p sts2-tui -- --play --zh --max-turns 6
 
 # 显示 LLM 思考过程
-cargo run -p sts2-tui -- --play --mock --zh --thinking
+cargo run -p sts2-tui -- --play --zh --thinking
 ```
 
 ### 会话历史
