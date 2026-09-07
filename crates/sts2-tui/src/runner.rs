@@ -50,9 +50,13 @@ fn start_decision(
     state.decision_state_json = state_json.to_string();
     let summary = state_summary(gs);
 
-    // game-knowledge 结构化索引检索
-    let game_knowledge =
+    // game-knowledge 结构化索引检索 + 本次任务的主动查询结果
+    let mut game_knowledge =
         sts2_agent::knowledge::search_game_knowledge(gs, &config.storage.game_knowledge_dir);
+    if !state.lookup_context.is_empty() {
+        game_knowledge.push_str("\n=== 知识库查询记录 ===\n");
+        game_knowledge.push_str(&state.lookup_context);
+    }
 
     // 读取 session 笔记
     let notes_path = format!(
@@ -577,6 +581,66 @@ async fn handle_backend_msg(
                 let first_line = action_lines[0].clone();
                 match parse::parse_action(&first_line) {
                     Ok(action) => {
+                        // 知识库查询：拦截，不发给游戏，查完注入上下文重新决策
+                        if action.tool == "lookup" {
+                            let query = action
+                                .args
+                                .get("query")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if query.is_empty() || state.lookup_rounds >= 3 {
+                                state.push_chat(
+                                    MsgRole::System,
+                                    "查询无效或已达本次任务上限（3 次），基于现有信息决策。".into(),
+                                );
+                                pending_actions.clear();
+                                if state.auto_mode && action_lines.len() <= 1 {
+                                    state.auto_mode = false;
+                                    state.task = None;
+                                    state.push_chat(MsgRole::System, "自主模式结束。".into());
+                                }
+                                state.execute_actions = state.auto_mode;
+                                *mode = Mode::Idle;
+                                full_text.clear();
+                                return false;
+                            }
+                            state.lookup_rounds += 1;
+                            state.push_chat(MsgRole::System, format!("📖 查询知识库: {query}…"));
+                            let result = sts2_agent::knowledge::lookup_query(
+                                &query,
+                                &config.storage.game_knowledge_dir,
+                            );
+                            if result.is_empty() {
+                                state
+                                    .lookup_context
+                                    .push_str(&format!("[查询 {query}]: 知识库无记录\n"));
+                                state.push_chat(MsgRole::System, format!("未找到 {query}"));
+                            } else {
+                                state
+                                    .lookup_context
+                                    .push_str(&format!("[查询 {query}]:\n{result}\n"));
+                                state.push_chat(
+                                    MsgRole::System,
+                                    format!(
+                                        "✅ 已查询 {query}（{} 字），继续分析…",
+                                        result.chars().count()
+                                    ),
+                                );
+                            }
+                            // lookup 不改变游戏状态：复用原状态重新决策
+                            state.streaming_text.clear();
+                            state.reasoning_text.clear();
+                            full_text.clear();
+                            pending_actions.clear();
+                            *mode = Mode::Streaming;
+                            state.progress = Some("结合查询结果分析…".into());
+                            let gs = state.game_state.clone();
+                            let sj = state.decision_state_json.clone();
+                            start_decision(&gs, &sj, config, llm, bt_tx, history, None, zh, state);
+                            full_text.clear();
+                            return false;
+                        }
                         *pending_actions = action_lines[1..].to_vec();
                         *mode = Mode::Executing;
                         state.progress = Some(format!("执行 {}…", action.tool));
@@ -829,6 +893,10 @@ async fn handle_user_intent(
     max_turns: u32,
     full_text: &mut String,
 ) {
+    // 新的用户意图：重置本次任务的知识库查询状态
+    state.lookup_context.clear();
+    state.lookup_rounds = 0;
+
     match intent {
         UserIntent::Quit => {}
         UserIntent::Interrupt => {

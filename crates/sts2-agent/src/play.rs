@@ -40,6 +40,10 @@ pub async fn run_play(
     let store = SessionStore::from_dir(&config.storage.sessions_dir);
     let mut session = Session::new(&config.model.model);
 
+    // 本次对局的知识库主动查询状态
+    let mut lookup_context = String::new();
+    let mut lookup_rounds: u32 = 0;
+
     for turn in 1..=max_turns {
         // 1. 取状态
         let state_json = mcp.get_game_state("json").await?;
@@ -63,9 +67,13 @@ pub async fn run_play(
             break;
         }
 
-        // 3. LLM 决策
-        let game_knowledge =
+        // 3. LLM 决策（game_knowledge + 本次对局的主动查询记录）
+        let mut game_knowledge =
             crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
+        if !lookup_context.is_empty() {
+            game_knowledge.push_str("\n=== 知识库查询记录 ===\n");
+            game_knowledge.push_str(&lookup_context);
+        }
         let messages = build_messages(
             &state_json,
             &config.model.model,
@@ -125,6 +133,31 @@ pub async fn run_play(
                 continue;
             }
         };
+
+        // 4.5 知识库查询：拦截，不发给游戏，结果注入下一轮上下文
+        if action.tool == "lookup" {
+            let query = action
+                .args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if query.is_empty() || lookup_rounds >= 3 {
+                eprintln!("[查询] 无效或已达上限（3 次），跳过。");
+                continue;
+            }
+            lookup_rounds += 1;
+            println!("[查询知识库] {query}…");
+            let result = crate::knowledge::lookup_query(&query, &config.storage.game_knowledge_dir);
+            if result.is_empty() {
+                lookup_context.push_str(&format!("[查询 {query}]: 知识库无记录\n"));
+                println!("[查询] 未找到 {query}");
+            } else {
+                lookup_context.push_str(&format!("[查询 {query}]:\n{result}\n"));
+                println!("[查询] 命中 {} 字，继续分析…", result.chars().count());
+            }
+            continue;
+        }
 
         // 5. 执行
         println!(

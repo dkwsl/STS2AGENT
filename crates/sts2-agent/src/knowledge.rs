@@ -53,6 +53,60 @@ fn strip_keys(v: &mut Value) {
 //
 // 与 search_knowledge（段落分块+关键词模糊匹配）不同，这里按行精确匹配 ID。
 
+/// LLM 主动查询：按名称/内部 ID 在所有知识库表格中查找匹配行。
+/// 遍历 8 个表格文件，按第一列匹配（大小写不敏感、忽略分隔符），返回带分类标注的结果。
+/// 总输出截断到 1500 字。查不到返回空串。
+pub fn lookup_query(query: &str, knowledge_dir: &str) -> String {
+    let dir = Path::new(knowledge_dir);
+    let norm = normalize_id(query.trim());
+    if !dir.exists() || norm.is_empty() {
+        return String::new();
+    }
+
+    let tables = [
+        ("cards.md", "卡牌"),
+        ("card-behaviors.md", "卡牌行为"),
+        ("monsters.md", "敌人"),
+        ("monster-behaviors.md", "敌人行为"),
+        ("potions.md", "药水"),
+        ("potion-behaviors.md", "药水行为"),
+        ("events.md", "事件"),
+        ("characters.md", "角色"),
+    ];
+
+    let mut out = String::new();
+    for (file, label) in tables {
+        let Ok(content) = std::fs::read_to_string(dir.join(file)) else {
+            continue;
+        };
+        let mut hits = Vec::new();
+        for line in content.lines() {
+            let t = line.trim();
+            if !t.starts_with('|') || t.contains("---") {
+                continue;
+            }
+            let first = t
+                .trim_start_matches('|')
+                .split('|')
+                .next()
+                .unwrap_or("")
+                .trim();
+            let nf = normalize_id(first);
+            if !nf.is_empty() && (nf == norm || nf.contains(&norm) || norm.contains(&nf)) {
+                hits.push(t.to_string());
+            }
+        }
+        if !hits.is_empty() {
+            out.push_str(&format!("[{label}]\n{}\n", hits.join("\n")));
+        }
+    }
+
+    if out.len() > 1500 {
+        out = out.chars().take(1500).collect::<String>() + "\n...";
+    }
+    out
+}
+
 /// 从 GameState 的 card_id / enemy_id / potion_id 查 game-knowledge 表格，
 /// 返回匹配行 + playbook 相关段落。总输出截断到 2000 字。
 pub fn search_game_knowledge(gs: &GameState, knowledge_dir: &str) -> String {
@@ -404,6 +458,40 @@ mod tests {
     #[test]
     fn slim_state_invalid_json_passthrough() {
         assert_eq!(slim_state_json("not json"), "not json");
+    }
+
+    #[test]
+    fn lookup_query_finds_card() {
+        let dir = "game-knowledge";
+        if !Path::new(dir).exists() {
+            return;
+        }
+        let result = lookup_query("StrikeIronclad", dir);
+        assert!(result.contains("[卡牌]"), "should hit cards.md: {result}");
+        assert!(result.contains("StrikeIronclad"));
+    }
+
+    #[test]
+    fn lookup_query_finds_monster_case_insensitive() {
+        let dir = "game-knowledge";
+        if !Path::new(dir).exists() {
+            return;
+        }
+        let result = lookup_query("jaw worm", dir);
+        assert!(
+            result.contains("[敌人]"),
+            "should hit monsters.md: {result}"
+        );
+    }
+
+    #[test]
+    fn lookup_query_miss_returns_empty() {
+        let dir = "game-knowledge";
+        if !Path::new(dir).exists() {
+            return;
+        }
+        assert!(lookup_query("NoSuchThing12345", dir).is_empty());
+        assert!(lookup_query("", dir).is_empty());
     }
 
     #[test]

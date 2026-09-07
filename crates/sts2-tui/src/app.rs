@@ -43,6 +43,10 @@ pub struct AppState {
     pub current_cancel: CancellationToken,
     /// 当前会话 ID（用于读取 session 笔记）。
     pub session_id: String,
+    /// 本次任务中 LLM 主动查询知识库的累积结果（注入后续决策上下文）。
+    pub lookup_context: String,
+    /// 本次任务已发起的查询次数（防无限查询）。
+    pub lookup_rounds: u32,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
     pub last_state_json: String,
     /// LLM 正在分析的状态 JSON（决策开始时的快照）。
@@ -88,6 +92,8 @@ impl AppState {
             task: None,
             current_cancel: CancellationToken::new(),
             session_id: String::new(),
+            lookup_context: String::new(),
+            lookup_rounds: 0,
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),

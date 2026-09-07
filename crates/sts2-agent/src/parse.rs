@@ -200,6 +200,8 @@ fn normalize_tool(name: &str) -> String {
         }
         // 菜单
         "menu_select" => "menu_select".into(),
+        // 知识库查询（本地拦截，不发给游戏）
+        "query" | "query_knowledge" | "knowledge" | "lookup" => "lookup".into(),
         other => other.to_string(),
     }
 }

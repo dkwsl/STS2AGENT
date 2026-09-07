@@ -516,3 +516,33 @@ cargo test --workspace
 
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（31 passed）。
+
+---
+
+## LLM 主动查询知识库（已完成）
+
+### 背景
+Agent 遇到不认识的牌时不会自己查知识库——之前只有决策前的自动注入（search_game_knowledge 按 GameState ID 查），LLM 无法主动查它想知道的信息。
+
+### 设计
+给 LLM 一个查询动作 `ACTION: lookup | query=<名称或ID>`：
+- runner/play 拦截该动作（不发给游戏），查本地 game-knowledge 表格
+- 查询结果累积到 lookup_context，注入后续轮次的"知识库查询记录"
+- LLM 拿到结果后继续决策（lookup 不改游戏状态，复用原状态重新分析）
+
+### 改动
+1. **knowledge.rs `lookup_query(query, dir)`**：按名称/ID 遍历 8 个表格（卡牌/敌人/药水/事件/角色 × 索引+行为），第一列模糊匹配（大小写不敏感、忽略分隔符），带分类标注，截断 1500 字。
+2. **app.rs**：AppState 加 `lookup_context`（累积查询结果）、`lookup_rounds`（防无限查询）。
+3. **runner.rs**：
+   - StreamDone 拦截 lookup：UI 提示（"📖 查询知识库: xxx…"→"✅ 已查询 xxx（N 字）"或"未找到"）、查库、注入上下文、复用原状态重新决策。
+   - start_decision 的 game_knowledge 拼接 lookup_context。
+   - handle_user_intent 开头重置查询状态（每次新意图重新计数）。
+   - 上限 3 次/任务，超限提示"基于现有信息决策"。
+4. **play.rs**：同步拦截（`[查询知识库]` 提示 + continue 下一轮）。
+5. **parse.rs**：normalize_tool 加 lookup 别名（query/query_knowledge/knowledge）。
+6. **decide.rs system prompt**：教 LLM 遇到不认识的对象或不确定的效果时先 `ACTION: lookup | query=...` 再决策；同一对象不重复查；每次任务最多 3 次。
+7. 新增 3 测试：查卡牌、大小写不敏感查敌人、未命中返回空。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（34 passed）。
+- `--decide --mock` 端到端正常。
