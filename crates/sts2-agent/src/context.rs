@@ -101,7 +101,7 @@ pub fn find_unknown_hand_cards(gs: &GameState, dir: &Path) -> String {
         String::new()
     } else {
         format!(
-            "\n[!] 以下手牌知识库未收录: {}\n对这些牌的效果不确定时，必须先 ACTION: lookup | query=<id或名称> 查询；查不到就明说\"不确定\"，禁止凭猜测出牌或评价。\n",
+            "\n[!] 以下手牌在本地知识库表格中未收录: {}\n注意：若下方「知识库查询记录」中已有这些牌的信息，以查询记录为准，不要再查询或声称查不到。对仍无信息的牌，明说\"不确定\"，禁止凭猜测出牌或评价。\n",
             unknown.join("、")
         )
     }

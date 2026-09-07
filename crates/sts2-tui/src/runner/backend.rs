@@ -190,27 +190,32 @@ async fn on_stream_done(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    if handle_lookup(&query, state, config, mcp).await {
-                        // lookup 不改变游戏状态：复用原状态重新决策
-                        full_text.clear();
-                        pending_actions.clear();
-                        *mode = Mode::Streaming;
-                        state.progress = Some("结合查询结果分析…".into());
-                        let gs = state.game_state.clone();
-                        let sj = state.decision_state_json.clone();
-                        start_decision(&gs, &sj, config, llm, bt_tx, history, None, zh, state);
-                        return;
-                    }
-                    // 查询无效/超限：按无有效动作收尾
-                    pending_actions.clear();
-                    if state.auto_mode && action_lines.len() <= 1 {
-                        state.auto_mode = false;
-                        state.task = None;
-                        state.push_chat(MsgRole::System, "自主模式结束。".into());
-                    }
-                    state.execute_actions = state.auto_mode;
-                    *mode = Mode::Idle;
+                    // 查询结果已写入"知识库查询记录"。必须带指令重新决策：
+                    // 否则 user_msg=None + 非 auto_mode 会走"只给文字建议、
+                    // 不要 ACTION"分支，丢失原任务且禁执行。
+                    let resume = if handle_lookup(&query, state, config, mcp).await {
+                        "（系统）查询完成，结果已附在下方「知识库查询记录」中。请基于查询结果继续完成我之前的指令。".to_string()
+                    } else {
+                        "（系统）查询无效或已达上限（3 次）。请基于现有信息继续完成我之前的指令。"
+                            .to_string()
+                    };
                     full_text.clear();
+                    pending_actions.clear();
+                    *mode = Mode::Streaming;
+                    state.progress = Some("结合查询结果分析…".into());
+                    let gs = state.game_state.clone();
+                    let sj = state.decision_state_json.clone();
+                    start_decision(
+                        &gs,
+                        &sj,
+                        config,
+                        llm,
+                        bt_tx,
+                        history,
+                        Some(&resume),
+                        zh,
+                        state,
+                    );
                     return;
                 }
 
