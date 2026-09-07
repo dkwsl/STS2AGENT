@@ -1,7 +1,6 @@
 //! 动作执行层：反射动作（免 LLM）、后台 MCP 执行、知识库查询拦截。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
@@ -61,7 +60,8 @@ pub(super) fn try_reflex_action(gs: &GameState) -> Option<(String, Value)> {
     }
 }
 
-/// 后台执行一个 MCP 动作（等 2 秒让游戏状态更新），结果经 ExecDone 回主循环。
+/// 后台执行一个 MCP 动作，结果经 ExecDone 回主循环。
+/// 无前置等待：动作本身即时生效，状态更新的等待由执行后的 stabilize 负责。
 pub(super) fn spawn_exec(
     mcp: &Arc<Mutex<McpClient>>,
     bt_tx: &mpsc::UnboundedSender<Backend>,
@@ -72,7 +72,6 @@ pub(super) fn spawn_exec(
     let bt_tx2 = bt_tx.clone();
     let tool = tool.to_string();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(2)).await;
         let mut m = mcp2.lock().await;
         let result = m.call_tool(&tool, args).await;
         let (success, message) = match result {

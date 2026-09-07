@@ -194,15 +194,7 @@ async fn on_stream_done(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    // 查询结果已写入"知识库查询记录"。必须带指令重新决策：
-                    // 否则 user_msg=None + 非 auto_mode 会走"只给文字建议、
-                    // 不要 ACTION"分支，丢失原任务且禁执行。
-                    let resume = if handle_lookup(&query, state, config, mcp).await {
-                        "（系统）查询完成，结果已附在下方「知识库查询记录」中。请基于查询结果继续完成我之前的指令。".to_string()
-                    } else {
-                        "（系统）查询无效或已达上限（3 次）。请基于现有信息继续完成我之前的指令。"
-                            .to_string()
-                    };
+                    let ok = handle_lookup(&query, state, config, mcp).await;
                     full_text.clear();
                     pending_actions.clear();
                     *mode = Mode::Streaming;
@@ -216,6 +208,15 @@ async fn on_stream_done(
                     let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
                     state.game_state = gs.clone();
                     state.last_state_json = sj.clone();
+                    // 自主模式走自主 prompt（查询记录在上下文中）；非自主带恢复指令
+                    // （否则 user_msg=None + 非 auto_mode 会走"只给文字建议"分支丢任务）
+                    let resume_msg = if state.auto_mode {
+                        None
+                    } else if ok {
+                        Some("（系统）查询完成，结果已附在下方「知识库查询记录」中。请基于查询结果继续完成我之前的指令。".to_string())
+                    } else {
+                        Some("（系统）查询无效或已达上限（3 次）。请基于现有信息继续完成我之前的指令。".to_string())
+                    };
                     start_decision(
                         &gs,
                         &sj,
@@ -223,7 +224,7 @@ async fn on_stream_done(
                         llm,
                         bt_tx,
                         history,
-                        Some(&resume),
+                        resume_msg.as_deref(),
                         zh,
                         state,
                     );
@@ -239,13 +240,17 @@ async fn on_stream_done(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
+                    let already = state.auto_mode;
                     state.auto_mode = true;
+                    state.no_action_streak = 0;
                     state.task = if task.is_empty() {
                         None
                     } else {
                         Some(task.clone())
                     };
-                    state.push_chat(MsgRole::System, format!("🤖 自主模式开启（{task}）"));
+                    if !already {
+                        state.push_chat(MsgRole::System, format!("🤖 自主模式开启（{task}）"));
+                    }
                     full_text.clear();
                     pending_actions.clear();
                     *mode = Mode::FetchingState;
@@ -254,12 +259,14 @@ async fn on_stream_done(
                     return;
                 }
 
-                // 自主模式关闭请求：任务完成/LLM 主动停止
+                // 自主模式关闭请求：仅在自主模式中生效（任务完成的唯一 LLM 途径）
                 if action.tool == "auto_stop" {
-                    state.auto_mode = false;
-                    state.task = None;
+                    if state.auto_mode {
+                        state.auto_mode = false;
+                        state.task = None;
+                        state.push_chat(MsgRole::System, "🤖 自主模式结束。".into());
+                    }
                     pending_actions.clear();
-                    state.push_chat(MsgRole::System, "🤖 自主模式结束。".into());
                     *mode = Mode::Idle;
                     state.progress = None;
                     full_text.clear();
@@ -282,7 +289,8 @@ async fn on_stream_done(
                     return;
                 }
 
-                // 自主模式内：正常动作入队执行
+                // 自主模式内：正常动作入队执行（动作有产出即重置无动作计数）
+                state.no_action_streak = 0;
                 *pending_actions = action_lines[1..].to_vec();
                 *mode = Mode::Executing;
                 state.progress = Some(format!("执行 {}…", action.tool));
@@ -295,14 +303,42 @@ async fn on_stream_done(
         }
     } else {
         // 没有 ACTION 行
-        // auto_mode 下 LLM 没给 ACTION = 它认为该停了 → 退出自主模式
         if state.auto_mode {
-            state.auto_mode = false;
-            state.task = None;
-            state.push_chat(MsgRole::System, "自主模式结束。".into());
+            // 自主模式中无 ACTION：不直接退出——纠正后重问（LLM 偶尔只输出文字分析）。
+            // 连续 3 次无 ACTION 才视为放弃，退出自主模式。
+            state.no_action_streak += 1;
+            if state.no_action_streak >= 3 {
+                state.auto_mode = false;
+                state.task = None;
+                state.no_action_streak = 0;
+                state.push_chat(MsgRole::System, "自主模式结束（连续 3 轮无操作）。".into());
+                *mode = Mode::Idle;
+                state.progress = None;
+            } else {
+                let nudge = "（系统）自主模式仍在进行。请直接给出下一步游戏操作 ACTION；仅当任务已全部完成时才输出 ACTION: auto_stop。".to_string();
+                let gs = state.game_state.clone();
+                let sj = state.last_state_json.clone();
+                full_text.clear();
+                pending_actions.clear();
+                *mode = Mode::Streaming;
+                state.progress = Some("继续分析…".into());
+                start_decision(
+                    &gs,
+                    &sj,
+                    config,
+                    llm,
+                    bt_tx,
+                    history,
+                    Some(&nudge),
+                    zh,
+                    state,
+                );
+                return;
+            }
+        } else {
+            *mode = Mode::Idle;
+            state.progress = None; // 回答完成：清除"LLM 回复中…"等进度提示
         }
-        *mode = Mode::Idle;
-        state.progress = None; // 回答完成：清除"LLM 回复中…"等进度提示
         state.last_poll = std::time::Instant::now();
     }
 
@@ -443,10 +479,11 @@ pub(super) fn spawn_state_stabilize(
     let mcp2 = mcp.clone();
     let bt_tx2 = bt_tx.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // 短等待 + 双取确认：动作已生效，只需等动画/结算落定
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         let mut m = mcp2.lock().await;
         let s1 = m.get_game_state("json").await;
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let s2 = m.get_game_state("json").await;
         match (s1, s2) {
             (Ok(a), Ok(b)) if a == b => {
@@ -454,7 +491,7 @@ pub(super) fn spawn_state_stabilize(
             }
             (Ok(_a), Ok(_b)) => {
                 // 不稳定，再等一次
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 match m.get_game_state("json").await {
                     Ok(c) => {
                         let _ = bt_tx2.send(Backend::StateReady(c));

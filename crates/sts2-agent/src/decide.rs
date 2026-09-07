@@ -220,7 +220,7 @@ pub fn build_messages(
             }
             _ => {
                 if auto_mode {
-                    format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n你正处于自主模式，游戏操作 ACTION 会被执行。请分析当前局面并直接给出下一步 ACTION。任务完成时输出 ACTION: auto_stop 关闭自主模式。")
+                    format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n你正处于自主模式，游戏操作 ACTION 会被执行。每轮必须给出下一步游戏操作 ACTION——这是硬性要求，不要只给文字分析。只有确认整个任务已全部完成时才输出 ACTION: auto_stop；任务未完成时绝不输出 auto_stop。")
                 } else {
                     format!("{state_part}{game_knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
                 }

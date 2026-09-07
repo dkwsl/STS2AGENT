@@ -655,3 +655,22 @@ STS2MCP Mod 在读取 shop 状态时会主动 `OpenInventory()` 打开商人界�
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
 - `--play --mock --max-turns 4` 端到端：地图→选点→战斗多 ACTION→领奖励，链路正常。
+
+---
+
+## 自主模式第二轮重构：防误退 + 提速（已完成）
+
+### 问题
+1. 分析时主动退出：on_stream_done 的"无 ACTION 即关自主"过于激进（LLM 偶尔只输出文字分析就被踢出）；自主 prompt 让 LLM 每轮判断"是否完成"导致过早 auto_stop。
+2. 过慢：每个动作前固定 sleep(2s)（本该只在执行后等待）+ 稳定检测再 2s + 双取 0.5s——每步 4.5s+ 纯等待。
+
+### 修复
+1. **无 ACTION 不再直接退出**：自主模式中 LLM 无 ACTION → 带纠正消息重新决策（"自主模式仍在进行，请给出下一步 ACTION；仅任务全部完成才 auto_stop"），连续 3 次（`no_action_streak`）才视为放弃退出。有动作产出即重置计数。
+2. **auto_stop 仅自主模式中生效**（非自主时忽略，防 LLM 误发噪音）；auto_start 重复请求不再重复提示。
+3. **提速**：spawn_exec 去掉前置 2s（动作即时执行，状态等待归执行后的 stabilize）；stabilize 2s→0.8s、双取间隔 0.5s→0.3s。每步固定等待 4.5s+ → ~1.4s。
+4. **自主 prompt 强化**："每轮必须给出下一步游戏操作 ACTION——硬性要求；任务未完成时绝不输出 auto_stop"。
+5. **lookup 恢复分叉**：自主模式下走自主 prompt（查询记录在上下文），非自主带恢复指令（保留原修复）。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
+- `--play --mock --max-turns 4`：4 轮 43s（大头为 LLM 响应），链路完整。

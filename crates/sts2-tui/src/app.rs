@@ -45,6 +45,8 @@ pub struct AppState {
     pub lookup_context: String,
     /// 本次任务已发起的查询次数（防无限查询）。
     pub lookup_rounds: u32,
+    /// 自主模式中连续无 ACTION 的轮数（达到 3 视为 LLM 放弃，退出自主）。
+    pub no_action_streak: u32,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
     pub last_state_json: String,
     /// LLM 正在分析的状态 JSON（决策开始时的快照）。
@@ -91,6 +93,7 @@ impl AppState {
             session_id: String::new(),
             lookup_context: String::new(),
             lookup_rounds: 0,
+            no_action_streak: 0,
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),
