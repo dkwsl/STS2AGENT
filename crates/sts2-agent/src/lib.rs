@@ -5,10 +5,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod context;
 pub mod decide;
-pub mod knowledge;
+pub mod lookup;
 pub mod parse;
 pub mod play;
+pub mod slim;
 pub mod storage;
 
 use sts2_core::Config;

@@ -559,3 +559,30 @@ Agent 遇到不认识的牌时不会自己查知识库——之前只有决策�
 - **修复 2**：search_game_knowledge 新增"未命中检测"——手牌中 id 和名称都查不到 cards.md 的牌，在注入的"游戏数据参考"里显式列出：`[!] 以下手牌知识库未收录: xxx [id=yyy]…必须先 ACTION: lookup 查询或明说"不确定"，禁止凭猜测出牌`。把"不认识"显式化，给 LLM 明确触发点。
 - **修复 3**：system prompt 把 lookup 从"遇到不认识的信息时"升级为"硬性要求"，特别强调对标注「知识库未收录」的牌必须查询或承认不确定。
 - 新增测试：`strip_card_suffix_matches_real_id_format`（STRIKE_R 命中 cards.md）、`search_flags_unknown_hand_cards`（未知牌被标注、已知牌不标注）。
+
+---
+
+## 架构重构：拆分巨石文件（已完成）
+
+### 背景
+runner.rs 膨胀到 1067 行：`handle_backend_msg` 452 行、17 个参数，StreamDone 分支单独 211 行；knowledge.rs 735 行混杂三种职责（JSON 瘦身/主动查询/自动注入）；`handle_user_intent` 4 个分支重复"取状态+start_decision"；ACTION 执行块内联重复 3 处。
+
+### 拆分（行为不变，纯结构重组）
+1. **knowledge.rs（735行）→ 三个单一职责模块**：
+   - `slim.rs`（58行）：状态 JSON 瘦身。
+   - `lookup.rs`（297行）：LLM 主动查询（lookup_query / perform_lookup / 显示名回退 / ID 归一化 / 表格匹配）。
+   - `context.rs`（375行）：决策前自动注入（search_game_knowledge / collect_* / playbook 检索 / Budget 长度控制）。
+2. **runner.rs（1067行）→ runner/ 模块**：
+   - `mod.rs`（228行）：主循环 + 按键处理 + Backend enum。
+   - `stream.rs`（158行）：决策发起（start_decision）/ 流消费 / 打断 / 状态轮询。
+   - `backend.rs`（529行）：后台消息编排，拆为 `on_stream_done`（再拆 `on_stale_decision`）/ `on_exec_done` / `on_state_ready` / `on_state_change`，每个单一职责。
+   - `intent.rs`（236行）：意图分类（parse_intent）+ 处理（handle_user_intent），4 分支的"取状态+决策"提取为 `refresh_and_decide`。
+   - `actions.rs`（129行）：反射动作 / 后台 MCP 执行（spawn_exec）/ lookup 拦截（handle_lookup）。
+3. **重复消除**：
+   - StreamDone/ExecDone/StateReady/StateChange 的内联执行块统一走 `spawn_exec`。
+   - lookup 拦截逻辑收敛到 `actions::handle_lookup`（内部调共享的 `lookup::perform_lookup`）。
+   - `handle_user_intent` 4 分支重复的取状态+start_decision 收敛到 `refresh_and_decide`。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（37 passed）。
+- `--decide --mock` 与 `--play --mock --max-turns 2` 端到端行为不变（play 正常出牌、会话存盘、缓存命中 1472 tokens）。

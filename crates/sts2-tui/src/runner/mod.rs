@@ -1,0 +1,228 @@
+//! TUI 异步事件循环——自然语言对话模式。
+//!
+//! 流程：
+//! 1. 取状态 → LLM 生成建议（流式，用户打字即打断）
+//! 2. 建议出来后不自动执行，等用户确认
+//! 3. 用户输入解析意图：执行 / 拒绝 / 对话 / 打断
+//! 4. 确认 → MCP 执行 → 取下一状态 → 循环
+//!
+//! 模块划分：
+//! - `stream`：LLM 决策的发起/消费/打断 + 状态轮询
+//! - `backend`：后台消息（流结束/执行完成/状态变化）的编排
+//! - `intent`：用户意图分类与处理
+//! - `actions`：反射动作 / 后台 MCP 执行 / 知识库查询拦截
+
+mod actions;
+mod backend;
+mod intent;
+mod stream;
+
+use std::io::stdout;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Result;
+use crossterm::event::{poll, read, Event, KeyCode, KeyEventKind};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use tokio::sync::{mpsc, Mutex};
+
+use sts2_agent::decide;
+use sts2_agent::storage::{Session, SessionStore};
+use sts2_core::{Config, GameState};
+use sts2_llm::{BudgetGuard, LlmClient, Usage};
+use sts2_mcp::McpClient;
+
+use crate::app::{AppState, Mode, MsgRole};
+
+use intent::parse_intent;
+use stream::abort_current_llm;
+
+/// 后台任务 → 主循环的消息。
+enum Backend {
+    StateReady(String),
+    StateChange(String),
+    Delta(String),
+    Reasoning(String),
+    Usage(Usage),
+    StreamDone,
+    StreamError(String),
+    ExecDone {
+        success: bool,
+        message: String,
+    },
+    IntentReady {
+        text: String,
+        intent: intent::UserIntent,
+    },
+    Error(String),
+}
+
+pub async fn run(
+    config: &Config,
+    use_mock: bool,
+    show_thinking: bool,
+    zh: bool,
+    _auto_play: bool,
+    max_turns: u32,
+) -> Result<()> {
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout());
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut state = AppState::new(zh);
+    state.show_thinking = show_thinking;
+
+    let (command, args) = if use_mock {
+        ("./target/debug/sts2-mcp-mock".to_string(), Vec::new())
+    } else {
+        (config.mcp.command.clone(), config.mcp.args.clone())
+    };
+    let mut mcp = McpClient::spawn(&command, &args)?;
+    mcp.initialize().await?;
+    let mcp = Arc::new(Mutex::new(mcp));
+
+    // 取首帧
+    let sj = mcp.lock().await.get_game_state("json").await?;
+    let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
+    state.game_state = gs.clone();
+    state.last_state_json = sj.clone();
+
+    let llm = LlmClient::from_config(&config.model);
+    let mut budget = BudgetGuard::new(config.budget.token_limit, config.budget.cost_limit_usd);
+    let mut history: Vec<decide::ChatTurn> = Vec::new();
+
+    let (bt_tx, mut bt_rx) = mpsc::unbounded_channel::<Backend>();
+
+    // 会话存储（R5）
+    let store = SessionStore::from_dir(&config.storage.sessions_dir);
+    let mut session = Session::new(&config.model.model);
+
+    // 后台状态轮询：每 0.5 秒检查游戏状态是否变化，变化则发 StateChange
+    {
+        let mcp_poll = mcp.clone();
+        let bt_tx_poll = bt_tx.clone();
+        let last_known = state.last_state_json.clone();
+        tokio::spawn(stream::poll_state_loop(mcp_poll, bt_tx_poll, last_known));
+    }
+
+    let mut mode = Mode::Idle;
+    let mut full_text = String::new();
+    let mut pending_actions: Vec<String> = Vec::new();
+    state.execute_actions = false;
+
+    // 首次只更新状态，不自动发起 LLM 分析——等用户指令
+    state.push_chat(
+        MsgRole::System,
+        "已连接。输入消息开始对话（如\"分析一下\"或\"自己打\"）。".into(),
+    );
+    state.session_id = session.id.clone();
+
+    let mut should_quit = false;
+    let mut last_draw = std::time::Instant::now();
+
+    loop {
+        // 按键优先：先非阻塞检查按键，再决定是否重绘
+        if poll(Duration::from_millis(0))? {
+            if let Event::Key(key) = read()? {
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Enter => {
+                            let text = state.submit();
+                            if text.is_empty() {
+                                continue;
+                            }
+                            // 打断当前流
+                            if !matches!(mode, Mode::Idle) && !matches!(mode, Mode::PendingConfirm)
+                            {
+                                abort_current_llm(&mut state, &mut bt_rx, &mut full_text);
+                                mode = Mode::Idle;
+                            }
+                            state.push_chat(MsgRole::User, text.clone());
+                            state.progress = Some("理解中…".into());
+                            // 关键词意图分类（省一次 LLM 调用）；
+                            // 未命中关键词的输入归 Chat，由决策 LLM 判断是否为操作指令
+                            let intent = parse_intent(&text);
+                            let _ = bt_tx.send(Backend::IntentReady { text, intent });
+                        }
+                        KeyCode::Backspace => {
+                            state.backspace();
+                        }
+                        KeyCode::Esc => {
+                            should_quit = true;
+                        }
+                        KeyCode::Char(c) => {
+                            state.input_char(c);
+                        }
+                        KeyCode::Up => {
+                            if state.chat_scroll < 1000 {
+                                state.chat_scroll += 3;
+                            }
+                        }
+                        KeyCode::Down => {
+                            state.chat_scroll = state.chat_scroll.saturating_sub(3);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if should_quit {
+            session.finished = true;
+            session.total_input = budget.total_input();
+            session.total_output = budget.total_output();
+            session.total_cost = budget.total_cost();
+            let _ = store.save(&session);
+            break;
+        }
+
+        // 非阻塞排空后台消息
+        while let Ok(msg) = bt_rx.try_recv() {
+            let quit = backend::handle_backend_msg(
+                msg,
+                &mut state,
+                &mut mode,
+                &mut full_text,
+                config,
+                &llm,
+                &mcp,
+                &bt_tx,
+                &mut bt_rx,
+                &mut history,
+                &mut budget,
+                &mut session,
+                &store,
+                &mut pending_actions,
+                zh,
+                max_turns,
+            )
+            .await;
+            if quit {
+                should_quit = true;
+                break;
+            }
+        }
+
+        // 限帧重绘：最多 15fps（66ms），减少 wrap_line 计算频率
+        if last_draw.elapsed() >= Duration::from_millis(66) {
+            terminal.draw(|f| crate::ui::draw(f, &state))?;
+            last_draw = std::time::Instant::now();
+        }
+
+        // 短暂让出 CPU，不 busy-loop
+        tokio::task::yield_now().await;
+    }
+
+    // 终端恢复
+    disable_raw_mode()?;
+    execute!(stdout(), LeaveAlternateScreen)?;
+    mcp.lock().await.shutdown().await.ok();
+    eprintln!("\n对局结束。总用量: {}", budget.summary());
+    Ok(())
+}

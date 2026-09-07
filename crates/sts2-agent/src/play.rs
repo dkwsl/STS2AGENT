@@ -69,7 +69,7 @@ pub async fn run_play(
 
         // 3. LLM 决策（game_knowledge + 本次对局的主动查询记录）
         let mut game_knowledge =
-            crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
+            crate::context::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
         if !lookup_context.is_empty() {
             game_knowledge.push_str("\n=== 知识库查询记录 ===\n");
             game_knowledge.push_str(&lookup_context);
@@ -148,11 +148,8 @@ pub async fn run_play(
             }
             lookup_rounds += 1;
             println!("[查询知识库] {query}…");
-            let (used, result) = crate::knowledge::lookup_query_smart(
-                &query,
-                &gs,
-                &config.storage.game_knowledge_dir,
-            );
+            let (used, result) =
+                crate::lookup::lookup_query_smart(&query, &gs, &config.storage.game_knowledge_dir);
             if result.is_empty() {
                 lookup_context.push_str(&format!("[查询 {query}]: 知识库无记录\n"));
                 println!("[查询] 未找到 {query}");

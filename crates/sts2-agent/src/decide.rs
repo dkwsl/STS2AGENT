@@ -50,7 +50,7 @@ pub async fn run_decide(
     let mut budget = BudgetGuard::new(config.budget.token_limit, config.budget.cost_limit_usd);
 
     let game_knowledge =
-        crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
+        crate::context::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
 
     let messages = build_messages(
         &state_json,
@@ -187,7 +187,7 @@ pub fn build_messages(
     }
 
     // 当前状态（瘦身：剥离 keywords / null 字段）+ 用户消息
-    let state_json = &crate::knowledge::slim_state_json(state_json);
+    let state_json = &crate::slim::slim_state_json(state_json);
     let task_part = match task {
         Some(t) if !t.is_empty() => format!("\n\n当前任务: {t}\n思考: 当前状态离完成任务还差什么？下一步做什么能推进任务？\n有些操作需要确认（如选完角色后需要点 confirm 开始游戏，选完遗物后需要 proceed）。注意当前 state_type 是什么，检查是否需要确认/推进操作。"),
         _ => String::new(),
