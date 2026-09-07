@@ -47,6 +47,10 @@ pub struct AppState {
     pub lookup_rounds: u32,
     /// 自主模式中连续无 ACTION 的轮数（达到 3 视为 LLM 放弃，退出自主）。
     pub no_action_streak: u32,
+    /// 最近一次 LLM 调用的用量（供 session 记录）。
+    pub last_usage: sts2_llm::Usage,
+    /// 本轮决策对应的用户输入（StreamDone 时写入 TurnRecord）。
+    pub pending_user_input: Option<String>,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
     pub last_state_json: String,
     /// LLM 正在分析的状态 JSON（决策开始时的快照）。
@@ -94,6 +98,8 @@ impl AppState {
             lookup_context: String::new(),
             lookup_rounds: 0,
             no_action_streak: 0,
+            last_usage: sts2_llm::Usage::default(),
+            pending_user_input: None,
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),

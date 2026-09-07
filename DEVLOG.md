@@ -701,3 +701,33 @@ LLM 偶尔把 `ACTION: combat_end_turn` 之类写在文本里——显示给了�
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
 - `--play --mock --max-turns 3`：地图→选点→战斗出牌全通（tool_calls/回退双路径）。
+
+---
+
+## R5 补全：会话记录 + 加载恢复（已完成）
+
+### 缺口核查
+R5 要求"保存/加载某次会话的完整上下文"。此前状态：
+1. TUI 会话的 `turns` **完全为空**（无任何记录写入，只有总量统计）——保存不完整。
+2. `--load` 只是只读回放打印。
+3. 不能恢复上下文继续对话。
+
+### 补全
+1. **TUI 会话记录**：
+   - `handle_user_intent` 开头存 `pending_user_input`（本轮用户输入）。
+   - `on_stream_done` push `TurnRecord`（state_summary/state_json/agent_text/action/user_input/当轮 tokens——`last_usage` 在 Usage 事件时记录），并同步 totals + 存盘；result 由 ExecDone 回填（原 last_mut 逻辑从此有效）。
+2. **加载恢复（--tui --load <id>）**：
+   - `runner::run` 加 `resume_id` 参数：加载 session → 恢复对话历史（user_input/agent_text → ChatTurn，LLM 上下文接续）→ 恢复 UI chat 面板 → `budget.restore()` 接续累计用量/成本 → 沿用原 session 继续追加 turns。
+   - `BudgetGuard::restore()` 新增。
+3. **main.rs**：`--tui --load <id>` 组合支持（tui 分支提前避免被 load 只读分支抢占）；`--max-turns` 恢复默认 0。
+
+### 用法
+```bash
+cargo run -p sts2-tui -- --list                    # 列出历史会话
+cargo run -p sts2-tui -- --load <id>               # 只读回放
+cargo run -p sts2-tui -- --tui --load <id> --mock  # 恢复上下文继续对话（LLM 带历史）
+```
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
+- `--play` 产生会话 → `--load` 回放显示每轮 user 无/agent 文本/ACTION/结果 ✓。

@@ -49,6 +49,13 @@ impl BudgetGuard {
         self.total_cost
     }
 
+    /// 从历史会话恢复累计用量（--load 继续会话时调用）。
+    pub fn restore(&mut self, total_input: u64, total_output: u64, total_cost: f64) {
+        self.total_input = total_input;
+        self.total_output = total_output;
+        self.total_cost = total_cost;
+    }
+
     pub fn summary(&self) -> String {
         if self.total_cached > 0 {
             format!(

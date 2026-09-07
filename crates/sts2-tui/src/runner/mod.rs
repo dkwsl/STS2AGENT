@@ -70,6 +70,7 @@ pub async fn run(
     zh: bool,
     _auto_play: bool,
     max_turns: u32,
+    resume_id: Option<String>,
 ) -> Result<()> {
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
@@ -100,9 +101,36 @@ pub async fn run(
 
     let (bt_tx, mut bt_rx) = mpsc::unbounded_channel::<Backend>();
 
-    // 会话存储（R5）
+    // 会话存储（R5）；--load <id> 时恢复历史上下文继续
     let store = SessionStore::from_dir(&config.storage.sessions_dir);
-    let mut session = Session::new(&config.model.model);
+    let mut session = match &resume_id {
+        Some(id) => {
+            let mut s = store
+                .load(id)
+                .map_err(|e| anyhow::anyhow!("加载会话 {id} 失败: {e:#}"))?;
+            s.finished = false;
+            // 恢复预算累计（预算守卫跨会话继续）
+            budget.restore(s.total_input, s.total_output, s.total_cost);
+            state.total_input = s.total_input;
+            state.total_output = s.total_output;
+            state.total_cost = s.total_cost;
+            // 恢复对话历史（LLM 上下文）与 UI 面板
+            for t in &s.turns {
+                if let Some(u) = &t.user_input {
+                    history.push(decide::ChatTurn::User(u.clone()));
+                    state.push_chat(crate::app::MsgRole::User, u.clone());
+                }
+                if !t.agent_text.is_empty() {
+                    history.push(decide::ChatTurn::Assistant(t.agent_text.clone()));
+                    state.push_chat(crate::app::MsgRole::Agent, t.agent_text.clone());
+                }
+            }
+            let n = s.turns.len();
+            state.current_turn = n as u32;
+            s
+        }
+        None => Session::new(&config.model.model),
+    };
 
     // 无后台状态轮询：状态读取只由两个入口触发——
     // 1) 用户让 agent 分析时（意图处理里 GET 一次）

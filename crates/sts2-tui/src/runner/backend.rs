@@ -46,6 +46,7 @@ pub(super) async fn handle_backend_msg(
             state.reasoning_text.push_str(&t);
         }
         Backend::Usage(u) => {
+            state.last_usage = u.clone();
             budget.record(&u, config.model.price_in, config.model.price_out);
             state.total_input = budget.total_input();
             state.total_output = budget.total_output();
@@ -87,6 +88,9 @@ pub(super) async fn handle_backend_msg(
                 pending_actions,
                 tool_calls,
                 zh,
+                budget,
+                session,
+                store,
             )
             .await;
         }
@@ -141,6 +145,9 @@ async fn on_stream_done(
     pending_actions: &mut Vec<parse::ParsedAction>,
     tool_calls: Vec<sts2_llm::ToolCall>,
     zh: bool,
+    budget: &mut BudgetGuard,
+    session: &mut Session,
+    store: &SessionStore,
 ) {
     // 校验：当前状态与 LLM 分析时是否一致（用户中间手动操作过则作废本次决策）
     let current_sj = mcp
@@ -193,10 +200,28 @@ async fn on_stream_done(
         .to_string();
     if !chat_text.is_empty() {
         state.push_chat(MsgRole::Agent, chat_text.clone());
-        history.push(decide::ChatTurn::Assistant(chat_text));
+        history.push(decide::ChatTurn::Assistant(chat_text.clone()));
     }
     state.streaming_text.clear();
     state.reasoning_text.clear();
+
+    // 记录本轮到 session（R5：TUI 会话也保存对话/动作/用量；result 由 ExecDone 回填）
+    session.turns.push(sts2_agent::storage::TurnRecord {
+        turn: session.turns.len() as u32 + 1,
+        state_summary: crate::app::state_summary(&state.game_state),
+        state_json: state.decision_state_json.clone(),
+        agent_text: chat_text,
+        action: actions.first().map(|a| format!("{} {}", a.tool, a.args)),
+        result: None,
+        success: false,
+        user_input: state.pending_user_input.take(),
+        input_tokens: state.last_usage.prompt_tokens,
+        output_tokens: state.last_usage.completion_tokens,
+    });
+    session.total_input = budget.total_input();
+    session.total_output = budget.total_output();
+    session.total_cost = budget.total_cost();
+    let _ = store.save(session);
 
     // 3. 处理动作：lookup / auto_start / auto_stop 拦截，其余按自主模式门禁
     if let Some(action) = actions.first().cloned() {

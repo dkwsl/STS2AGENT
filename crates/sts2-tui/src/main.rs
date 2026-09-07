@@ -31,7 +31,7 @@ struct Cli {
     thinking: bool,
     #[arg(long)]
     zh: bool,
-    #[arg(long)]
+    #[arg(long, default_value_t = 0)]
     /// 最大执行轮数；0 = 不限（默认）。预算（token/成本）仍会兜底中断。
     max_turns: u32,
     /// 列出历史会话。
@@ -90,6 +90,26 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+    } else if cli.tui {
+        let cfg = sts2_agent::load_config()?;
+        if cfg.model.api_key.is_empty() {
+            eprintln!("未配置 API key。");
+            std::process::exit(1);
+        }
+        // --tui --load <id>：恢复历史会话上下文继续对话（R5）
+        let resume = cli.load.clone();
+        tokio::runtime::Runtime::new()?.block_on(async {
+            runner::run(
+                &cfg,
+                cli.mock,
+                cli.thinking,
+                cli.zh,
+                cli.play,
+                cli.max_turns,
+                resume,
+            )
+            .await
+        })
     } else if let Some(id) = &cli.load {
         let cfg = sts2_agent::load_config()?;
         let store = sts2_agent::storage::SessionStore::from_dir(&cfg.storage.sessions_dir);
@@ -126,23 +146,6 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-    } else if cli.tui {
-        let cfg = sts2_agent::load_config()?;
-        if cfg.model.api_key.is_empty() {
-            eprintln!("未配置 API key。");
-            std::process::exit(1);
-        }
-        tokio::runtime::Runtime::new()?.block_on(async {
-            runner::run(
-                &cfg,
-                cli.mock,
-                cli.thinking,
-                cli.zh,
-                cli.play,
-                cli.max_turns,
-            )
-            .await
-        })
     } else if cli.decide {
         let cfg = sts2_agent::load_config()?;
         if cfg.model.api_key.is_empty() {
