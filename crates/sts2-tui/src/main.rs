@@ -31,7 +31,8 @@ struct Cli {
     thinking: bool,
     #[arg(long)]
     zh: bool,
-    #[arg(long, default_value = "20")]
+    #[arg(long)]
+    /// 最大执行轮数；0 = 不限（默认）。预算（token/成本）仍会兜底中断。
     max_turns: u32,
     /// 列出历史会话。
     #[arg(long)]

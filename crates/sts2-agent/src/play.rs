@@ -44,7 +44,13 @@ pub async fn run_play(
     let mut lookup_context = String::new();
     let mut lookup_rounds: u32 = 0;
 
-    for turn in 1..=max_turns {
+    let mut turn: u32 = 0;
+    loop {
+        turn += 1;
+        // max_turns=0 表示不限；预算守卫与游戏结束仍会中断
+        if max_turns > 0 && turn > max_turns {
+            break;
+        }
         // 1. 取状态
         let state_json = mcp.get_game_state("json").await?;
         let gs: GameState = serde_json::from_str(&state_json).unwrap_or_default();

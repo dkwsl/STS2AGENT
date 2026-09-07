@@ -553,8 +553,8 @@ async fn on_state_ready(
         state.progress = None;
         return;
     }
-    // 自主循环轮数上限（防失控）
-    if state.current_turn >= max_turns {
+    // 自主循环轮数上限（max_turns=0 表示不限；预算守卫仍会兜底）
+    if max_turns > 0 && state.current_turn >= max_turns {
         state.auto_mode = false;
         state.task = None;
         state.finished = true;
