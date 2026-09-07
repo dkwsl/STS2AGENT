@@ -45,8 +45,6 @@ use stream::abort_current_llm;
 /// 后台任务 → 主循环的消息。
 enum Backend {
     StateReady(String),
-    StateChange(String),
-    Notice(String),
     Delta(String),
     Reasoning(String),
     Usage(Usage),
@@ -104,17 +102,9 @@ pub async fn run(
     let store = SessionStore::from_dir(&config.storage.sessions_dir);
     let mut session = Session::new(&config.model.model);
 
-    // 后台状态轮询：每 0.5 秒检查游戏状态是否变化，变化则发 StateChange；
-    // shop 状态自动暂停（Mod 读取会打开商人界面），用户输入恢复
-    {
-        let mcp_poll = mcp.clone();
-        let bt_tx_poll = bt_tx.clone();
-        let last_known = state.last_state_json.clone();
-        let pause_flag = state.poll_paused.clone();
-        tokio::spawn(stream::poll_state_loop(
-            mcp_poll, bt_tx_poll, last_known, pause_flag,
-        ));
-    }
+    // 无后台状态轮询：状态读取只由两个入口触发——
+    // 1) 用户让 agent 分析时（意图处理里 GET 一次）
+    // 2) 自主模式执行完动作后（等状态稳定再 GET，喂给 LLM 循环决策）
 
     let mut mode = Mode::Idle;
     let mut full_text = String::new();

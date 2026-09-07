@@ -604,3 +604,26 @@ lookup 查询升级为两级：本地 game-knowledge 表格 → 游戏 Mod 自�
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（37 passed）。
 - `--decide --mock` 正常（mock 无 search_wiki 工具，静默降级不报错）。真实游戏下 wiki 查询走 Mod 数据。
+
+---
+
+## 移除后台状态轮询（已完成）
+
+### 背景
+STS2MCP Mod 在读取 shop 状态时会主动 `OpenInventory()` 打开商人界面（StateBuilder.cs ~551，上游设计）。Agent 的 0.5s 后台轮询（poll_state_loop）导致用户手动关闭商人界面后被无限重开。曾做"shop 暂停轮询"缓解（commit 279eb3c），用户要求改为根本性架构：**状态读取只由用户意图驱动**。
+
+### 新架构
+- **非自主模式**：完全无后台 GET。用户让分析/下指令时，意图处理中 GET 一次并喂给 LLM（refresh_and_decide）。
+- **自主模式**：执行完动作 → 等 2s + 双取确认状态稳定（spawn_state_stabilize）→ StateReady → 反射动作或 LLM 决策 → 循环。
+- 商店问题根治：agent 待机时零 GET，商人界面不再被打开；仅在用户主动交互或自主决策时读状态。
+
+### 删除内容
+- `poll_state_loop` 及其 spawn；`Backend::StateChange`/`Backend::Notice` 变体；`on_state_change` 处理函数；`AppState.poll_paused` 标志及 IntentReady 恢复逻辑。
+- 保留：StreamDone 的状态一致性校验（防用户在 LLM 分析期间手动操作导致误执行）。
+
+### 代价（已知取舍）
+- 用户手动打游戏时 agent 面板不再自动刷新，需输入消息触发。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
+- `--play --mock --max-turns 2` 端到端正常（自主循环 stabilize→LLM→执行未受影响）。

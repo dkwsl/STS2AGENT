@@ -14,7 +14,7 @@ use crate::app::{AppState, Mode, MsgRole};
 
 use super::actions::{handle_lookup, spawn_exec, try_reflex_action};
 use super::intent::{handle_user_intent, UserIntent};
-use super::stream::{abort_current_llm, start_decision};
+use super::stream::start_decision;
 use super::Backend;
 
 /// 处理一条后台消息。返回 true = 应退出程序。
@@ -56,10 +56,6 @@ pub(super) async fn handle_backend_msg(
             if matches!(intent, UserIntent::Quit) {
                 return true;
             }
-            // 用户输入：恢复状态轮询（shop 暂停后由此恢复）
-            state
-                .poll_paused
-                .store(false, std::sync::atomic::Ordering::Relaxed);
             handle_user_intent(
                 &intent,
                 &text,
@@ -120,12 +116,6 @@ pub(super) async fn handle_backend_msg(
                 state, mode, config, llm, mcp, bt_tx, history, full_text, zh, sj,
             )
             .await;
-        }
-        Backend::StateChange(sj) => {
-            on_state_change(state, mode, full_text, mcp, bt_tx, bt_rx, sj).await;
-        }
-        Backend::Notice(msg) => {
-            state.push_chat(MsgRole::System, msg);
         }
         Backend::Error(e) => {
             state.push_chat(MsgRole::System, e);
@@ -482,65 +472,4 @@ async fn on_state_ready(
     state.progress = Some("分析中…".into());
     full_text.clear();
     start_decision(&gs, &sj, config, llm, bt_tx, history, None, zh, state);
-}
-
-/// 后台轮询检测到游戏状态变化（通常是用户手动操作）。
-#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
-async fn on_state_change(
-    state: &mut AppState,
-    mode: &mut Mode,
-    full_text: &mut String,
-    mcp: &Arc<Mutex<McpClient>>,
-    bt_tx: &mpsc::UnboundedSender<Backend>,
-    bt_rx: &mut mpsc::UnboundedReceiver<Backend>,
-    sj: String,
-) {
-    if sj == state.last_state_json {
-        return;
-    }
-    state.last_state_json = sj.clone();
-    let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
-    state.game_state = gs.clone();
-
-    // Unknown/GameOver/Overlay: 更新状态但不分析
-    if matches!(
-        gs.state_type,
-        StateType::Unknown | StateType::GameOver | StateType::Overlay
-    ) {
-        if matches!(gs.state_type, StateType::GameOver) {
-            state.finished = true;
-            state.progress = Some("游戏结束".into());
-        }
-        // 打断当前 LLM 流（如有）
-        abort_current_llm(state, bt_rx, full_text);
-        *mode = Mode::Idle;
-        return;
-    }
-
-    // 正在执行动作或取状态时不打断（等 ExecDone→StateReady 正常流程）
-    if matches!(*mode, Mode::Executing | Mode::FetchingState) {
-        return;
-    }
-
-    // 核心：状态变化必须打断当前 LLM 流，丢弃输出
-    let had_stream = matches!(*mode, Mode::Streaming);
-    abort_current_llm(state, bt_rx, full_text);
-    if !state.auto_mode {
-        if had_stream {
-            state.push_chat(
-                MsgRole::System,
-                "⚠️ 游戏状态变化，已取消当前分析（输出未执行）。".into(),
-            );
-        }
-        // 非自主模式：不自动分析，等用户指令
-        *mode = Mode::Idle;
-        state.progress = None;
-        return;
-    }
-
-    // 自主模式：等状态稳定后再继续（不立即分析——动画/结算期间状态连续变化）
-    // 稳定后由 StateReady 统一走 反射动作/LLM 分析 路径
-    *mode = Mode::FetchingState;
-    state.progress = Some("等待状态稳定…".into());
-    spawn_state_stabilize(mcp, bt_tx);
 }
