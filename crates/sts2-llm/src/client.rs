@@ -96,6 +96,7 @@ impl LlmClient {
         let usage = Usage {
             prompt_tokens: v["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
             completion_tokens: v["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+            cached_tokens: parse_cached_tokens(&v["usage"]),
         };
 
         Ok(ChatResponse {
@@ -199,6 +200,7 @@ impl LlmClient {
                                 usage = Usage {
                                     prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0),
                                     completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0),
+                                    cached_tokens: parse_cached_tokens(u),
                                 };
                             }
                         }
@@ -230,6 +232,15 @@ impl LlmClient {
     pub fn thinking_mode(&self) -> bool {
         self.thinking_mode
     }
+}
+
+/// 解析 prompt 缓存命中 token 数。
+/// DeepSeek: usage.prompt_cache_hit_tokens；OpenAI: usage.prompt_tokens_details.cached_tokens。
+fn parse_cached_tokens(usage: &Value) -> u64 {
+    usage["prompt_cache_hit_tokens"]
+        .as_u64()
+        .or_else(|| usage["prompt_tokens_details"]["cached_tokens"].as_u64())
+        .unwrap_or(0)
 }
 
 /// 过滤非可打印字符（控制字符、零宽字符等），保留换行和制表符。

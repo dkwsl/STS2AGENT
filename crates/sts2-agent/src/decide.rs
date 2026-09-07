@@ -135,6 +135,11 @@ pub fn build_messages(
 - 考虑斩杀线：能杀则不防御直接输出。
 - 攻击意图优先防御，Buff/Debuff/Sleep 意图优先输出。
 
+事实来源——防幻觉规则：
+- 卡牌/遗物/药水/敌人的效果一律以状态 JSON 里的 description 字段为准；知识库参考只是辅助，两者冲突时信 description。
+- 不确定某机制时就直说"不确定"，禁止根据杀戮尖塔1的经验推测杀戮尖塔2的机制——这是两代游戏，数值和规则不同。
+- 数字（伤害/格挡/费用）只引用状态 JSON 里可见的，不要编造。
+
 明确指令（触发执行）："出第二张牌" "结束回合" "自己打" "自己打这层" "执行" "就这样做"
 非明确指令（只对话）："你觉得呢" "为什么" "分析一下" "你来吧" "交给你" "自动打"
 
@@ -164,15 +169,17 @@ pub fn build_messages(
 
     let mut msgs = vec![system];
 
-    // 对话历史
-    for turn in history {
+    // 对话历史：只保留最近 10 条（控制上下文增长，前缀稳定部分利于缓存）
+    let recent_start = history.len().saturating_sub(10);
+    for turn in &history[recent_start..] {
         match turn {
             ChatTurn::User(t) => msgs.push(ChatMessage::user(t.clone())),
             ChatTurn::Assistant(t) => msgs.push(ChatMessage::assistant(t.clone())),
         }
     }
 
-    // 当前状态 + 用户消息
+    // 当前状态（瘦身：剥离 keywords / null 字段）+ 用户消息
+    let state_json = &crate::knowledge::slim_state_json(state_json);
     let task_part = match task {
         Some(t) if !t.is_empty() => format!("\n\n当前任务: {t}\n思考: 当前状态离完成任务还差什么？下一步做什么能推进任务？\n有些操作需要确认（如选完角色后需要点 confirm 开始游戏，选完遗物后需要 proceed）。注意当前 state_type 是什么，检查是否需要确认/推进操作。"),
         _ => String::new(),

@@ -104,6 +104,76 @@ fn abort_current_llm(
     full_text.clear();
 }
 
+/// 自主模式下的反射动作：无需 LLM 判断的机械操作（省 token）。
+/// 只处理确定无歧义的操作，其余返回 None 交给 LLM。
+fn try_reflex_action(gs: &GameState) -> Option<(String, serde_json::Value)> {
+    match gs.state_type {
+        // 奖励屏：从右到左逐个领取（避免索引漂移），领完推进
+        StateType::Rewards => {
+            if let Some(r) = &gs.rewards {
+                if !r.items.is_empty() {
+                    let idx = r.items.iter().filter_map(|i| i.index).max().unwrap_or(0);
+                    return Some((
+                        "rewards_claim".into(),
+                        serde_json::json!({ "reward_index": idx }),
+                    ));
+                }
+                if r.can_proceed.unwrap_or(false) {
+                    return Some(("proceed_to_map".into(), serde_json::json!({})));
+                }
+            }
+            None
+        }
+        // 卡牌选择：已选完进入预览/可确认状态 → 直接确认（否则会卡住）
+        StateType::CardSelect => {
+            if let Some(cs) = &gs.card_select {
+                let confirmed_ready = cs.can_confirm.unwrap_or(false)
+                    && (cs.preview_showing.unwrap_or(false) || cs.cards.is_empty());
+                if confirmed_ready {
+                    return Some(("deck_confirm_selection".into(), serde_json::json!({})));
+                }
+            }
+            None
+        }
+        // 宝箱：唯一遗物直接拾取（非竞标阶段）
+        StateType::Treasure => {
+            if let Some(t) = &gs.treasure {
+                if t.relics.len() == 1 && !t.is_bidding_phase.unwrap_or(false) {
+                    let idx = t.relics[0].index.unwrap_or(0);
+                    return Some((
+                        "treasure_claim_relic".into(),
+                        serde_json::json!({ "relic_index": idx }),
+                    ));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// 后台执行一个 MCP 动作（等 2 秒让游戏状态更新），结果经 ExecDone 回主循环。
+fn spawn_exec(
+    mcp: &Arc<Mutex<McpClient>>,
+    bt_tx: &mpsc::UnboundedSender<Backend>,
+    tool: &str,
+    args: serde_json::Value,
+) {
+    let mcp2 = mcp.clone();
+    let bt_tx2 = bt_tx.clone();
+    let tool = tool.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut m = mcp2.lock().await;
+        let result = m.call_tool(&tool, args).await;
+        let (success, message) = match result {
+            Ok(r) => (true, r.chars().take(120).collect()),
+            Err(e) => (false, format!("{e:#}")),
+        };
+        let _ = bt_tx2.send(Backend::ExecDone { success, message });
+    });
+}
+
 /// 后台状态轮询：每 1 秒检查游戏状态是否变化。
 async fn poll_state_loop(
     mcp: Arc<Mutex<McpClient>>,
@@ -235,15 +305,10 @@ pub async fn run(
                             }
                             state.push_chat(MsgRole::User, text.clone());
                             state.progress = Some("理解中…".into());
-                            let llm2 = LlmClient::from_config(&config.model);
-                            let bt_tx2 = bt_tx.clone();
-                            let pending = state.pending_action.clone();
-                            let zh2 = zh;
-                            tokio::spawn(async move {
-                                let intent =
-                                    llm_parse_intent(&llm2, &text, pending.as_deref(), zh2).await;
-                                let _ = bt_tx2.send(Backend::IntentReady { text, intent });
-                            });
+                            // 关键词意图分类（省一次 LLM 调用）；
+                            // 未命中关键词的输入归 Chat，由决策 LLM 判断是否为操作指令
+                            let intent = parse_intent(&text);
+                            let _ = bt_tx.send(Backend::IntentReady { text, intent });
                         }
                         KeyCode::Backspace => {
                             state.backspace();
@@ -672,6 +737,13 @@ async fn handle_backend_msg(
                 state.progress = None;
                 return false;
             }
+            // 反射动作：机械操作不问 LLM（省 token）
+            if let Some((tool, args)) = try_reflex_action(&gs) {
+                spawn_exec(mcp, bt_tx, &tool, args);
+                *mode = Mode::Executing;
+                state.progress = Some(format!("执行 {tool}…"));
+                return false;
+            }
             state.execute_actions = true;
             *mode = Mode::Streaming;
             state.progress = Some("分析中…".into());
@@ -713,6 +785,14 @@ async fn handle_backend_msg(
             if !state.auto_mode {
                 *mode = Mode::Idle;
                 state.progress = None;
+                return false;
+            }
+
+            // 反射动作：机械操作不问 LLM（省 token）
+            if let Some((tool, args)) = try_reflex_action(&gs) {
+                spawn_exec(mcp, bt_tx, &tool, args);
+                *mode = Mode::Executing;
+                state.progress = Some(format!("执行 {tool}…"));
                 return false;
             }
 
@@ -830,9 +910,11 @@ async fn handle_user_intent(
             start_decision(&gs, &sj, config, llm, bt_tx, history, Some(text), zh, state);
         }
         UserIntent::Chat(msg) => {
-            // 纯对话：不给执行权限，agent 只做分析/回答，不操作游戏
+            // 对话/操作指令：由决策 LLM 判断是否输出 ACTION。
+            // execute_actions=true + 非 auto_mode = 单次执行语义（执行一轮即停），
+            // 纯对话（无 ACTION）则不操作游戏。
             history.push(decide::ChatTurn::User(msg.clone()));
-            state.execute_actions = false;
+            state.execute_actions = true;
             state.task = None;
             *mode = Mode::Streaming;
             state.progress = Some("LLM 回复中…".into());
@@ -865,50 +947,13 @@ async fn handle_user_intent(
     }
 }
 
-/// 用 LLM 解析用户输入的意图（替代关键词匹配）。
-async fn llm_parse_intent(
-    llm: &LlmClient,
-    text: &str,
-    pending_action: Option<&str>,
-    zh: bool,
-) -> UserIntent {
-    let lang = if zh { "请用中文回答。" } else { "" };
-    let pending_desc = pending_action.unwrap_or("无");
-    let system = sts2_llm::ChatMessage::system(format!(
-        "你是一个意图分类器。根据玩家的自然语言输入，判断玩家意图。{lang}\n\n分类规则：\n\
-         - CONFIRM: 玩家同意执行当前建议（如\"执行\"\"那就这么做吧\"\"可以\"\"好\"\"继续\"）\n\
-         - REJECT: 玩家否决当前建议或要求换一个（如\"不\"\"换一个\"\"不要这样\"\"不好\"）\n\
-         - QUIT: 玩家想退出程序（如\"退出\"\"退出吧\"\"退出喵\"\"quit\"\"结束\"）\n\
-         - INTERRUPT: 玩家想打断当前正在进行的 LLM 回复（如\"打断\"\"停\"\"stop\"）\n\
-         - AUTOPLAY: 玩家明确让 Agent 自主操作游戏。只匹配「自己打」「自己打这层」「自己打这局」「自己打这场」等以「自己打」为核心的指令。不要把「你来」「交给你」「自动」「帮我打」等模糊表述归为 AUTOPLAY——那些只是对话，不触发自主操作。\n\
-         - CHAT: 其他一切情况——玩家在与 Agent 对话、问问题、给具体操作指令\n\n\
-         当前待确认动作: {pending_desc}\n\n\
-         只回复分类名称（CONFIRM/REJECT/QUIT/INTERRUPT/AUTOPLAY/CHAT），不要任何其他文字。"
-    ));
-    let user = sts2_llm::ChatMessage::user(format!("玩家输入: {text}"));
-
-    match llm.chat(&[system, user]).await {
-        Ok(resp) => {
-            let tag = resp.content.trim().to_uppercase();
-            match tag.as_str() {
-                "CONFIRM" => UserIntent::Confirm,
-                "REJECT" => UserIntent::Reject,
-                "QUIT" => UserIntent::Quit,
-                "INTERRUPT" => UserIntent::Interrupt,
-                "AUTOPLAY" => UserIntent::AutoPlay,
-                _ => UserIntent::Chat(text.to_string()),
-            }
-        }
-        Err(_) => fallback_parse_intent(text),
-    }
-}
-
-/// 关键词回退（LLM 不可用时）。
-fn fallback_parse_intent(text: &str) -> UserIntent {
+/// 关键词意图分类（无 LLM，省一次调用）。
+/// 未命中关键词的输入归 Chat，由决策 LLM 判断是否为操作指令（单次执行语义）。
+fn parse_intent(text: &str) -> UserIntent {
     let lower = text.to_lowercase();
     let trimmed = text.trim();
 
-    if lower.contains("退出") || lower == "quit" || lower == "exit" {
+    if trimmed.contains("退出") || lower == "quit" || lower == "exit" {
         return UserIntent::Quit;
     }
     // 自主模式：只认「自己打」类，其余一律当对话
@@ -928,6 +973,7 @@ fn fallback_parse_intent(text: &str) -> UserIntent {
         || lower == "yes"
         || trimmed.contains("这样做")
         || trimmed.contains("就这么做")
+        || trimmed.contains("就这么打")
     {
         return UserIntent::Confirm;
     }

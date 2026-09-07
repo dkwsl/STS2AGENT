@@ -1,11 +1,47 @@
-//! game-knowledge 结构化知识库检索：从 game-knowledge/*.md 按游戏内部 ID 查表。
+//! game-knowledge 结构化知识库检索 + 状态 JSON 瘦身。
 //!
-//! 根据当前 GameState 中的 card_id / enemy_id / potion_id / event_id，
+//! 检索：根据当前 GameState 中的 card_id / enemy_id / potion_id / event_id，
 //! 去对应的表格文件按行匹配，返回卡牌/敌人/药水/事件的元数据与行为信息。
+//! 瘦身：发送状态 JSON 给 LLM 前递归剥离对决策无用但占 token 的字段。
 
 use std::path::Path;
 
+use serde_json::Value;
+
 use sts2_core::{GameState, StateType};
+
+/// 状态 JSON 瘦身：递归删除对决策无用且占 token 的字段。
+/// - `keywords`：每个实体的关键词数组，冗长且 LLM 不需要
+/// - 值为 `null` 的字段：表示"不适用"，删除不丢语义
+///
+/// 解析失败时原样返回。
+pub fn slim_state_json(state_json: &str) -> String {
+    match serde_json::from_str::<Value>(state_json) {
+        Ok(mut v) => {
+            strip_keys(&mut v);
+            serde_json::to_string(&v).unwrap_or_else(|_| state_json.to_string())
+        }
+        Err(_) => state_json.to_string(),
+    }
+}
+
+fn strip_keys(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            map.remove("keywords");
+            map.retain(|_, val| !val.is_null());
+            for (_, child) in map.iter_mut() {
+                strip_keys(child);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr.iter_mut() {
+                strip_keys(child);
+            }
+        }
+        _ => {}
+    }
+}
 
 // ===== game-knowledge 结构化索引检索 =====
 // game-knowledge/ 是从游戏反编译数据生成的结构化表格，按内部 ID 索引：
@@ -351,6 +387,24 @@ fn append_section(result: &mut String, title: &str, content: &str, counter: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slim_state_strips_keywords_and_nulls() {
+        let json = r#"{"state_type":"monster","player":{"hp":72,"name":null,"hand":[{"id":"STRIKE_R","keywords":["Strike","攻击"]}],"relics":[{"counter":null}]}}"#;
+        let slim = slim_state_json(json);
+        assert!(!slim.contains("keywords"));
+        assert!(!slim.contains("null"));
+        assert!(slim.contains("STRIKE_R"));
+        // 往返仍可解析
+        let v: serde_json::Value = serde_json::from_str(&slim).unwrap();
+        assert_eq!(v["state_type"], "monster");
+        assert_eq!(v["player"]["hp"], 72);
+    }
+
+    #[test]
+    fn slim_state_invalid_json_passthrough() {
+        assert_eq!(slim_state_json("not json"), "not json");
+    }
 
     #[test]
     fn game_knowledge_lookup_card() {

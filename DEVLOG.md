@@ -476,3 +476,43 @@ cargo test --workspace
 
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（29 passed）。
+
+---
+
+## 降幻觉 + 省 token 优化（已完成）
+
+### 背景
+两个问题：1) LLM 幻觉严重，对游戏机制的理解靠猜（STS2 太新，训练数据没有；知识库的反编译命令 LLM 读不懂）。2) token 消耗大（一次 TUI 会话 127k input tokens：每步完整重发状态 JSON、每句话额外一次 LLM 意图分类、历史无限累积）。
+
+### A1 防幻觉规则（decide.rs system prompt）
+- 卡牌/遗物/药水效果一律以状态 JSON 的 description 字段为准，知识库只是辅助。
+- 不确定就说"不确定"，禁止用杀戮尖塔1的经验推测杀戮尖塔2机制。
+- 数字只引用状态 JSON 里可见的。
+
+### A2 状态 JSON 瘦身（knowledge.rs slim_state_json）
+- 发给 LLM 前递归删除：`keywords` 数组（冗长无用）、值为 `null` 的字段（表示"不适用"）。
+- 样本实测省 23%；真实状态（手牌/遗物/意图更多）预计省 30%+。
+- 新增 2 测试：strip 功能 + 非法 JSON 透传。
+
+### B1 意图分类去 LLM 化（runner.rs）
+- 删 `llm_parse_intent`（每句输入一次 LLM 调用），改纯关键词 `parse_intent`。
+- 未命中关键词的输入归 Chat，由决策 LLM 判断是否操作（省一次调用且语义更准）。
+- Chat 分支恢复单次执行语义：`execute_actions=true` + 非 auto_mode → LLM 判定操作指令则执行一轮即停，纯对话不操作。修复了"出第二张牌"类指令不执行的退化。
+
+### B2 自主模式反射动作（runner.rs try_reflex_action）
+机械操作不问 LLM，直接执行：
+- Rewards：从右到左逐个领奖（`rewards_claim` 最大 index）；领完 `proceed_to_map`。
+- CardSelect：已选牌进入可确认状态（can_confirm 且 preview_showing/cards 空）→ 直接 `deck_confirm_selection`。
+- Treasure：唯一遗物且非竞标 → 直接 `treasure_claim_relic`。
+接线到 StateReady/StateChange 的 auto_mode 分支，命中反射则跳过 start_decision。
+
+### B3 历史截断（decide.rs build_messages）
+- history 只保留最近 10 条 ChatTurn（原来无限累积）。
+
+### B4 prompt 缓存可见化（sts2-llm）
+- Usage 新增 `cached_tokens`，解析 DeepSeek `prompt_cache_hit_tokens` / OpenAI `prompt_tokens_details.cached_tokens`。
+- BudgetGuard 汇总展示 cached 数（供应商支持前缀缓存时可观察命中量）。
+- 消息前缀稳定性已具备：system（固定）+ history（追加式）→ 长会话在支持缓存的 API 上自动命中。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（31 passed）。

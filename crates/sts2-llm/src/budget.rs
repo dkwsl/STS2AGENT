@@ -6,6 +6,7 @@ use crate::types::Usage;
 pub struct BudgetGuard {
     total_input: u64,
     total_output: u64,
+    total_cached: u64,
     total_cost: f64,
     token_limit: u64,
     cost_limit: f64,
@@ -16,6 +17,7 @@ impl BudgetGuard {
         Self {
             total_input: 0,
             total_output: 0,
+            total_cached: 0,
             total_cost: 0.0,
             token_limit,
             cost_limit,
@@ -25,6 +27,7 @@ impl BudgetGuard {
     pub fn record(&mut self, usage: &Usage, price_in: f64, price_out: f64) {
         self.total_input += usage.prompt_tokens;
         self.total_output += usage.completion_tokens;
+        self.total_cached += usage.cached_tokens;
         self.total_cost += usage.cost(price_in, price_out);
     }
 
@@ -47,13 +50,24 @@ impl BudgetGuard {
     }
 
     pub fn summary(&self) -> String {
-        format!(
-            "input={}, output={}, total={}, cost=${:.4}",
-            self.total_input,
-            self.total_output,
-            self.total_input + self.total_output,
-            self.total_cost
-        )
+        if self.total_cached > 0 {
+            format!(
+                "input={}, output={}, total={}, cached={}, cost=${:.4}",
+                self.total_input,
+                self.total_output,
+                self.total_input + self.total_output,
+                self.total_cached,
+                self.total_cost
+            )
+        } else {
+            format!(
+                "input={}, output={}, total={}, cost=${:.4}",
+                self.total_input,
+                self.total_output,
+                self.total_input + self.total_output,
+                self.total_cost
+            )
+        }
     }
 }
 
@@ -66,6 +80,7 @@ mod tests {
         let u = Usage {
             prompt_tokens: 1_000_000,
             completion_tokens: 500_000,
+            cached_tokens: 0,
         };
         // price_in=0.15, price_out=0.60 per 1M
         assert!((u.cost(0.15, 0.60) - 0.45).abs() < 1e-9);
@@ -77,6 +92,7 @@ mod tests {
         let u = Usage {
             prompt_tokens: 400,
             completion_tokens: 300,
+            cached_tokens: 0,
         };
         guard.record(&u, 0.15, 0.60);
         assert!(!guard.is_over_budget());
@@ -94,6 +110,7 @@ mod tests {
         let u = Usage {
             prompt_tokens: 100_000,
             completion_tokens: 50_000,
+            cached_tokens: 0,
         };
         guard.record(&u, 1.0, 5.0); // cost = 0.1 + 0.25 = 0.35 > 0.01
         assert!(guard.is_over_budget());
@@ -105,6 +122,7 @@ mod tests {
         let u = Usage {
             prompt_tokens: 999_999,
             completion_tokens: 999_999,
+            cached_tokens: 0,
         };
         guard.record(&u, 999.0, 999.0);
         assert!(!guard.is_over_budget());

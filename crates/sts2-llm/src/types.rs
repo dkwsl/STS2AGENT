@@ -34,6 +34,9 @@ impl ChatMessage {
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// prompt 命中缓存的部分（DeepSeek prompt_cache_hit_tokens /
+    /// OpenAI prompt_tokens_details.cached_tokens）。仅统计展示，不计价。
+    pub cached_tokens: u64,
 }
 
 impl Usage {
