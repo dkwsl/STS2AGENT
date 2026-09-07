@@ -87,7 +87,6 @@ pub(super) async fn handle_backend_msg(
             on_exec_done(
                 state,
                 mode,
-                config,
                 mcp,
                 bt_tx,
                 budget,
@@ -106,10 +105,7 @@ pub(super) async fn handle_backend_msg(
             .await;
         }
         Backend::StateChange(sj) => {
-            on_state_change(
-                state, mode, full_text, config, llm, mcp, bt_tx, bt_rx, history, zh, sj,
-            )
-            .await;
+            on_state_change(state, mode, full_text, mcp, bt_tx, bt_rx, sj).await;
         }
         Backend::Error(e) => {
             state.push_chat(MsgRole::System, e);
@@ -144,9 +140,7 @@ async fn on_stream_done(
     let state_valid = !current_sj.is_empty() && current_sj == state.decision_state_json;
 
     if !state_valid {
-        return on_stale_decision(
-            state, mode, full_text, config, llm, bt_tx, history, zh, current_sj,
-        );
+        return on_stale_decision(state, mode, full_text, mcp, bt_tx, current_sj);
     }
 
     // ---- 状态一致，正常处理 LLM 输出 ----
@@ -254,17 +248,14 @@ async fn on_stream_done(
     full_text.clear();
 }
 
-/// 决策时状态已失效：丢弃本次分析；自主模式用新状态重新分析。
+/// 决策时状态已失效：丢弃本次分析；自主模式等状态稳定后继续。
 #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 fn on_stale_decision(
     state: &mut AppState,
     mode: &mut Mode,
     full_text: &mut String,
-    config: &Config,
-    llm: &LlmClient,
+    mcp: &Arc<Mutex<McpClient>>,
     bt_tx: &mpsc::UnboundedSender<Backend>,
-    history: &mut [decide::ChatTurn],
-    zh: bool,
     current_sj: String,
 ) {
     state.streaming_text.clear();
@@ -280,27 +271,16 @@ fn on_stale_decision(
         state.game_state = gs;
         state.last_state_json = current_sj.clone();
     }
-    // 只有自主模式才用新状态重新分析
+    // 只有自主模式才继续：等状态稳定后由 StateReady 统一路径处理
     if state.auto_mode && !current_sj.is_empty() {
         let gs: GameState = serde_json::from_str(&current_sj).unwrap_or_default();
         if !matches!(
             gs.state_type,
             StateType::Unknown | StateType::GameOver | StateType::Overlay
         ) {
-            state.execute_actions = true;
-            *mode = Mode::Streaming;
-            state.progress = Some("状态变化，重新分析…".into());
-            start_decision(
-                &gs,
-                &current_sj,
-                config,
-                llm,
-                bt_tx,
-                history,
-                None,
-                zh,
-                state,
-            );
+            *mode = Mode::FetchingState;
+            state.progress = Some("等待状态稳定…".into());
+            spawn_state_stabilize(mcp, bt_tx);
             return;
         }
     }
@@ -336,7 +316,6 @@ fn append_session_notes(state: &AppState, config: &Config, notes: &[String]) {
 async fn on_exec_done(
     state: &mut AppState,
     mode: &mut Mode,
-    config: &Config,
     mcp: &Arc<Mutex<McpClient>>,
     bt_tx: &mpsc::UnboundedSender<Backend>,
     budget: &mut BudgetGuard,
@@ -381,7 +360,7 @@ async fn on_exec_done(
         return;
     }
 
-    // 队列空了 → 检查预算 → 等 2 秒后取下一帧状态
+    // 队列空了 → 检查预算 → 等状态稳定
     if budget.is_over_budget() {
         state.finished = true;
         state.progress = Some(format!("预算超限: {}", budget.summary()));
@@ -391,13 +370,20 @@ async fn on_exec_done(
 
     *mode = Mode::FetchingState;
     state.progress = Some("等待状态稳定…".into());
+    spawn_state_stabilize(mcp, bt_tx);
+}
+
+/// 等待游戏状态稳定后再发 StateReady（供 ExecDone/StateChange 共用）。
+/// 双取确认：取一次 → 等 0.5s → 再取，相同才认为稳定；不同则再等一次。
+pub(super) fn spawn_state_stabilize(
+    mcp: &Arc<Mutex<McpClient>>,
+    bt_tx: &mpsc::UnboundedSender<Backend>,
+) {
     let mcp2 = mcp.clone();
     let bt_tx2 = bt_tx.clone();
-    let _ = config; // 后续如需可传配置
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let mut m = mcp2.lock().await;
-        // 双取确认状态稳定：第一次取，等 0.5 秒再取，相同才认为稳定
         let s1 = m.get_game_state("json").await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let s2 = m.get_game_state("json").await;
@@ -484,13 +470,9 @@ async fn on_state_change(
     state: &mut AppState,
     mode: &mut Mode,
     full_text: &mut String,
-    config: &Config,
-    llm: &LlmClient,
     mcp: &Arc<Mutex<McpClient>>,
     bt_tx: &mpsc::UnboundedSender<Backend>,
     bt_rx: &mut mpsc::UnboundedReceiver<Backend>,
-    history: &mut [decide::ChatTurn],
-    zh: bool,
     sj: String,
 ) {
     if sj == state.last_state_json {
@@ -520,33 +502,25 @@ async fn on_state_change(
         return;
     }
 
-    // 核心：状态变化必须打断当前 LLM 流，丢弃输出，用新状态重新分析
+    // 核心：状态变化必须打断当前 LLM 流，丢弃输出
+    let had_stream = matches!(*mode, Mode::Streaming);
     abort_current_llm(state, bt_rx, full_text);
     if !state.auto_mode {
-        state.push_chat(
-            MsgRole::System,
-            "⚠️ 游戏状态变化，已取消当前分析（输出未执行）。".into(),
-        );
-    }
-
-    // 判断是否需要自动分析：只有自主模式（用户明确说了"自己打"）才持续自动操作
-    if !state.auto_mode {
+        if had_stream {
+            state.push_chat(
+                MsgRole::System,
+                "⚠️ 游戏状态变化，已取消当前分析（输出未执行）。".into(),
+            );
+        }
+        // 非自主模式：不自动分析，等用户指令
         *mode = Mode::Idle;
         state.progress = None;
         return;
     }
 
-    // 反射动作：机械操作不问 LLM（省 token）
-    if let Some((tool, args)) = try_reflex_action(&gs) {
-        spawn_exec(mcp, bt_tx, &tool, args);
-        *mode = Mode::Executing;
-        state.progress = Some(format!("执行 {tool}…"));
-        return;
-    }
-
-    // 用新状态重新分析
-    state.execute_actions = true;
-    *mode = Mode::Streaming;
-    state.progress = Some("状态更新，重新分析…".into());
-    start_decision(&gs, &sj, config, llm, bt_tx, history, None, zh, state);
+    // 自主模式：等状态稳定后再继续（不立即分析——动画/结算期间状态连续变化）
+    // 稳定后由 StateReady 统一走 反射动作/LLM 分析 路径
+    *mode = Mode::FetchingState;
+    state.progress = Some("等待状态稳定…".into());
+    spawn_state_stabilize(mcp, bt_tx);
 }
