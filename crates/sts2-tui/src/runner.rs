@@ -607,8 +607,10 @@ async fn handle_backend_msg(
                             }
                             state.lookup_rounds += 1;
                             state.push_chat(MsgRole::System, format!("📖 查询知识库: {query}…"));
-                            let result = sts2_agent::knowledge::lookup_query(
+                            let gs_snapshot = state.game_state.clone();
+                            let (used, result) = sts2_agent::knowledge::lookup_query_smart(
                                 &query,
+                                &gs_snapshot,
                                 &config.storage.game_knowledge_dir,
                             );
                             if result.is_empty() {
@@ -617,13 +619,19 @@ async fn handle_backend_msg(
                                     .push_str(&format!("[查询 {query}]: 知识库无记录\n"));
                                 state.push_chat(MsgRole::System, format!("未找到 {query}"));
                             } else {
+                                if used != query {
+                                    state.push_chat(
+                                        MsgRole::System,
+                                        format!("（显示名转内部 ID: {used}）"),
+                                    );
+                                }
                                 state
                                     .lookup_context
-                                    .push_str(&format!("[查询 {query}]:\n{result}\n"));
+                                    .push_str(&format!("[查询 {query} → {used}]:\n{result}\n"));
                                 state.push_chat(
                                     MsgRole::System,
                                     format!(
-                                        "✅ 已查询 {query}（{} 字），继续分析…",
+                                        "✅ 已查询 {used}（{} 字），继续分析…",
                                         result.chars().count()
                                     ),
                                 );

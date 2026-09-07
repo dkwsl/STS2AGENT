@@ -107,6 +107,69 @@ pub fn lookup_query(query: &str, knowledge_dir: &str) -> String {
     out
 }
 
+/// 智能查询：先按原词查（LLM 应优先用英文内部 ID）；
+/// 查不到时，从 GameState 中找显示名（name，可能是中文）对应的内部 ID，转换后重查。
+/// 返回 (实际生效的查询词, 结果)。结果为空表示两层都未命中。
+pub fn lookup_query_smart(query: &str, gs: &GameState, knowledge_dir: &str) -> (String, String) {
+    let direct = lookup_query(query, knowledge_dir);
+    if !direct.is_empty() {
+        return (query.to_string(), direct);
+    }
+    if let Some(id) = find_id_by_display_name(gs, query) {
+        let r = lookup_query(&id, knowledge_dir);
+        if !r.is_empty() {
+            return (id, r);
+        }
+    }
+    (query.to_string(), String::new())
+}
+
+/// 在 GameState 中按显示名（UI 名称，可能是中文）查找对象的内部英文 ID。
+/// 覆盖：手牌卡牌、遗物、药水、敌人。
+fn find_id_by_display_name(gs: &GameState, name: &str) -> Option<String> {
+    let target = name.trim().to_lowercase();
+    if target.is_empty() {
+        return None;
+    }
+    if let Some(p) = &gs.player {
+        // 手牌：name → id
+        if let Some(hand) = &p.hand {
+            for card in hand {
+                if card.name.trim().to_lowercase() == target && !card.id.is_empty() {
+                    return Some(card.id.clone());
+                }
+            }
+        }
+        // 遗物
+        for relic in &p.relics {
+            if relic.name.trim().to_lowercase() == target && !relic.id.is_empty() {
+                return Some(relic.id.clone());
+            }
+        }
+        // 药水
+        for potion in &p.potions {
+            if potion.name.trim().to_lowercase() == target && !potion.id.is_empty() {
+                return Some(potion.id.clone());
+            }
+        }
+    }
+    // 敌人：name → entity_id（去掉 _N 后缀）
+    if let Some(b) = &gs.battle {
+        for e in &b.enemies {
+            if e.name.trim().to_lowercase() == target && !e.entity_id.is_empty() {
+                let eid = e
+                    .entity_id
+                    .trim_end_matches(|c: char| c.is_ascii_digit() || c == '_')
+                    .to_string();
+                if !eid.is_empty() {
+                    return Some(eid);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// 从 GameState 的 card_id / enemy_id / potion_id 查 game-knowledge 表格，
 /// 返回匹配行 + playbook 相关段落。总输出截断到 2000 字。
 pub fn search_game_knowledge(gs: &GameState, knowledge_dir: &str) -> String {
@@ -492,6 +555,38 @@ mod tests {
         }
         assert!(lookup_query("NoSuchThing12345", dir).is_empty());
         assert!(lookup_query("", dir).is_empty());
+    }
+
+    #[test]
+    fn lookup_smart_falls_back_to_display_name() {
+        let dir = "game-knowledge";
+        if !Path::new(dir).exists() {
+            return;
+        }
+        use sts2_core::{Card, Player};
+        // 中文显示名"打击"，内部 ID StrikeIronclad
+        let card = Card {
+            id: "StrikeIronclad".into(),
+            name: "打击".into(),
+            ..Default::default()
+        };
+        let p = Player {
+            hand: Some(vec![card]),
+            ..Default::default()
+        };
+        let gs = GameState {
+            state_type: StateType::Monster,
+            player: Some(p),
+            ..Default::default()
+        };
+        // 英文 ID 直接命中
+        let (used, r) = lookup_query_smart("StrikeIronclad", &gs, dir);
+        assert_eq!(used, "StrikeIronclad");
+        assert!(!r.is_empty());
+        // 中文显示名查不到表格 → 自动转 ID 再查
+        let (used, r) = lookup_query_smart("打击", &gs, dir);
+        assert_eq!(used, "StrikeIronclad", "should fall back to internal id");
+        assert!(r.contains("StrikeIronclad"));
     }
 
     #[test]

@@ -546,3 +546,9 @@ Agent 遇到不认识的牌时不会自己查知识库——之前只有决策�
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（34 passed）。
 - `--decide --mock` 端到端正常。
+
+### 补充：中英文查询回退
+- LLM 优先用英文内部 ID 查询（prompt 指导，命中最准）；用显示名（中文）查询时系统自动回退：
+- `lookup_query_smart(query, gs, dir)`：原词查不到 → 从 GameState 找显示名对应的内部 ID（手牌/遗物/药水/敌人）→ 转换后重查。
+- TUI 显示转换提示（"显示名转内部 ID: xxx"），查询记录记 `[查询 原词 → ID]`。
+- 新增测试 `lookup_smart_falls_back_to_display_name`（中文"打击"→ StrikeIronclad）。

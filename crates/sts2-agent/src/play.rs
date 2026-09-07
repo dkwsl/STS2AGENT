@@ -148,12 +148,19 @@ pub async fn run_play(
             }
             lookup_rounds += 1;
             println!("[查询知识库] {query}…");
-            let result = crate::knowledge::lookup_query(&query, &config.storage.game_knowledge_dir);
+            let (used, result) = crate::knowledge::lookup_query_smart(
+                &query,
+                &gs,
+                &config.storage.game_knowledge_dir,
+            );
             if result.is_empty() {
                 lookup_context.push_str(&format!("[查询 {query}]: 知识库无记录\n"));
                 println!("[查询] 未找到 {query}");
             } else {
-                lookup_context.push_str(&format!("[查询 {query}]:\n{result}\n"));
+                if used != query {
+                    println!("[查询] 显示名转内部 ID: {used}");
+                }
+                lookup_context.push_str(&format!("[查询 {query} → {used}]:\n{result}\n"));
                 println!("[查询] 命中 {} 字，继续分析…", result.chars().count());
             }
             continue;
