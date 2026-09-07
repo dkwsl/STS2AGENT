@@ -13,8 +13,8 @@ This document is for agents that operate the game through MCP. It is not a full 
 1. Check which cards in `combat.hand[]` have `playable=true`.
 2. If `requires_target=true`, choose from `combat.enemies[]`.
 3. For unfamiliar cards:
-   - read [cards.md](/Users/chart/Documents/project/sp/docs/game-knowledge/cards.md)
-   - then read [card-behaviors.md](/Users/chart/Documents/project/sp/docs/game-knowledge/card-behaviors.md)
+   - read [cards.md](/game-knowledge/cards.md)
+   - then read [card-behaviors.md](/game-knowledge/card-behaviors.md)
 4. Default action priority:
    - secure lethal
    - cover dangerous enemy intent
@@ -25,8 +25,8 @@ This document is for agents that operate the game through MCP. It is not a full 
 
 - Potion actions are not fully implemented yet, but the knowledge base can still support planning.
 - Lookup order:
-  - [potions.md](/Users/chart/Documents/project/sp/docs/game-knowledge/potions.md)
-  - [potion-behaviors.md](/Users/chart/Documents/project/sp/docs/game-knowledge/potion-behaviors.md)
+  - [potions.md](/game-knowledge/potions.md)
+  - [potion-behaviors.md](/game-knowledge/potion-behaviors.md)
 - `Usage=CombatOnly` usually means burst or tactical combat value.
 - `Usage=AnyTime` usually means healing, route prep, or broader utility.
 

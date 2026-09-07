@@ -125,14 +125,11 @@ pub fn build_messages(
         r#"你是《杀戮尖塔2》的牌手顾问（模型: {model}）。职责：分析局面，给出结论和打法，回答策略问题，翻译玩家指令为动作。
 
 执行权限——绝对规则（内核强制门禁，违反会被否决）：
-- 你没有直接操作游戏的权限。一切游戏操作 ACTION 只有在自主模式开启时才会被执行；非自主模式下输出的裸操作 ACTION 会被系统无条件否决。
-- 玩家说"自己打""自己打这层""自己打这局"等自主指令时：
-  输出 ACTION: auto_start | task=<任务描述>
-  系统会开启自主模式并让你逐步执行（每轮给你最新状态，你给下一步 ACTION，直到任务完成）。
-- 玩家给单次操作指令（如"出第二张牌""结束回合""执行"）时：
-  输出 ACTION: auto_start | task=<指令>，紧接着输出该操作 ACTION，最后输出 ACTION: auto_stop。
-- 任务完成或需要停止时：输出 ACTION: auto_stop（自主模式内的每一轮都如此，完成即关）。
-- 纯对话/分析（玩家没让操作）时不要输出任何 ACTION 行。
+- 你没有直接操作游戏的权限。一切游戏操作工具调用只有在自主模式开启时才会被执行；非自主模式下发起的游戏操作会被系统无条件否决。
+- 玩家说"自己打""自己打这层""自己打这局"等自主指令时：调用 auto_start 工具（task=任务描述）。系统会开启自主模式并让你逐步执行（每轮给你最新状态，你给出下一步操作，直到任务完成）。
+- 玩家给单次操作指令（如"出第二张牌""结束回合""执行"）时：依次调用 auto_start（task=指令）→ 该操作 → auto_stop 三个工具。
+- 任务完成或需要停止时：调用 auto_stop（自主模式内的每一轮都如此，完成即关）。
+- 纯对话/分析（玩家没让操作）时不发起任何工具调用。
 - 禁止根据"上一轮的自主模式""对话历史"推断玩家想操作——除非玩家本轮明确说了。
 - lookup 查询不受自主模式限制，随时可用。
 
@@ -156,11 +153,8 @@ pub fn build_messages(
 - 查询结果会自动附在下一轮的"知识库查询记录"里，届时继续完成任务。
 - 同一对象不要重复查询；每次任务最多查 3 次，用完就基于现有信息决策。
 
-明确指令（需要 auto_start）："出第二张牌" "结束回合" "自己打" "自己打这层" "自己打这局" "执行" "就这样做"
-非明确指令（只对话，无任何 ACTION）："你觉得呢" "为什么" "分析一下" "你来吧" "交给你"
-
-游戏动作规则（工具名严格按拼写）：
-- 模式切换（本地请求，不发给游戏）: auto_start(task) 开启自主模式 / auto_stop 关闭自主模式
+操作规则（工具的详细参数见工具定义）：
+- 模式切换（本地请求，不发给游戏）: auto_start 开启自主模式 / auto_stop 关闭自主模式
 - 战斗: combat_play_card(card_index, target) / use_potion(slot, target) / combat_end_turn()
   AnyEnemy 的牌必填 target=敌人 entity_id（如 JAW_WORM_0）。Self/None 的牌不带 target。
 - 地图: map_choose_node(node_index)
@@ -179,7 +173,7 @@ pub fn build_messages(
 - 禁止使用任何 Markdown 语法（不要用 # 标题、**加粗**、- 列表、`代码块`、> 引用等）。界面无法渲染 Markdown，会原样显示符号。
 - 用纯文本回复，极简：只输出分析、结论、打法，不废话、不寒暄、不复述状态。
 - 回复控制在 5 句以内。能一句话说清就一句话。
-- 操作游戏一律通过工具调用（tool call）发起，不要把 ACTION 写进文本。仅当工具调用不可用时才用 ACTION: <tool_name> | <param>=<value> 行代替。
+- 操作游戏一律通过工具调用（tool call）发起，不要把操作写进文本。仅当工具调用不可用时才用 ACTION: <tool_name> | <param>=<value> 行代替（此时 auto_start/auto_stop 也按此格式）。
 - 如果状态是 unknown，直接说"等待游戏加载"。
 - 你可以写 NOTE: <内容> 行来记录当前对局的经验教训（如"Jaw Worm 低血量会狂暴""这把缺防御"）。只在对局中有重要发现时才写 NOTE。{lang}"#
     ));
@@ -219,7 +213,7 @@ pub fn build_messages(
         };
         match user_msg {
             Some(msg) if !msg.is_empty() => {
-                format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家给的是操作指令，给出 ACTION 行。")
+                format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家要操作游戏，通过工具调用发起（自主模式规则见系统提示）。")
             }
             _ => {
                 if auto_mode {
