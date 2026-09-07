@@ -203,8 +203,15 @@ async fn on_stream_done(
                     pending_actions.clear();
                     *mode = Mode::Streaming;
                     state.progress = Some("结合查询结果分析…".into());
-                    let gs = state.game_state.clone();
-                    let sj = state.decision_state_json.clone();
+                    // lookup 不依赖具体状态：重取最新状态决策，
+                    // 避免 StreamDone 状态校验因快照过期而丢弃本轮输出
+                    let sj = match mcp.lock().await.get_game_state("json").await {
+                        Ok(s) if !s.is_empty() => s,
+                        _ => state.decision_state_json.clone(),
+                    };
+                    let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
+                    state.game_state = gs.clone();
+                    state.last_state_json = sj.clone();
                     start_decision(
                         &gs,
                         &sj,
@@ -263,6 +270,11 @@ fn on_stale_decision(
     state.streaming_text.clear();
     state.reasoning_text.clear();
     full_text.clear();
+    // 明确告知用户：输出已显示但被作废（否则看起来像"打印了却没执行"）
+    state.push_chat(
+        MsgRole::System,
+        "⚠️ 游戏状态已变化（决策期间局面变动），本次分析作废。".into(),
+    );
     if !current_sj.is_empty() {
         let gs: GameState = serde_json::from_str(&current_sj).unwrap_or_default();
         state.game_state = gs;
@@ -510,6 +522,12 @@ async fn on_state_change(
 
     // 核心：状态变化必须打断当前 LLM 流，丢弃输出，用新状态重新分析
     abort_current_llm(state, bt_rx, full_text);
+    if !state.auto_mode {
+        state.push_chat(
+            MsgRole::System,
+            "⚠️ 游戏状态变化，已取消当前分析（输出未执行）。".into(),
+        );
+    }
 
     // 判断是否需要自动分析：只有自主模式（用户明确说了"自己打"）才持续自动操作
     if !state.auto_mode {
