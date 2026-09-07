@@ -94,6 +94,7 @@ pub(super) async fn handle_backend_msg(
             state.push_chat(MsgRole::System, format!("LLM 错误: {e}"));
             state.streaming_text.clear();
             *mode = Mode::Idle;
+            state.progress = None;
             full_text.clear();
         }
         Backend::ExecDone { success, message } => {
@@ -252,6 +253,7 @@ async fn on_stream_done(
         // 非 auto_mode 时执行权限只持续一轮，用完即关
         state.execute_actions = state.auto_mode;
         *mode = Mode::Idle;
+        state.progress = None; // 回答完成：清除"LLM 回复中…"等进度提示
         state.last_poll = std::time::Instant::now();
     }
 

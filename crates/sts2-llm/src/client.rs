@@ -11,6 +11,9 @@ use tracing::debug;
 
 use crate::types::{ChatMessage, ChatResponse, StreamEvent, Usage};
 
+/// 流式响应的单次 chunk 空闲超时。
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
 pub struct LlmClient {
     http: reqwest::Client,
     endpoint: String,
@@ -150,7 +153,18 @@ impl LlmClient {
             let mut buf = String::new();
             let mut usage = Usage::default();
 
-            while let Some(chunk) = stream.next().await {
+            // 单次 chunk 读取加空闲超时：部分供应商不发 [DONE] 且保持连接，
+            // 没有超时会永远挂起（UI 停留在"回复中"）。90 秒零输出视为流结束。
+            loop {
+                let chunk = match tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await {
+                    Ok(Some(c)) => c,
+                    Ok(None) => break, // 流正常关闭
+                    Err(_) => {
+                        // 空闲超时：按流结束处理（循环外统一收尾发 Usage+Done）
+                        let _ = send(StreamEvent::Error("stream idle timeout (90s)".into()));
+                        break;
+                    }
+                };
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
