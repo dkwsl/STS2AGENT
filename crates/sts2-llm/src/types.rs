@@ -39,6 +39,15 @@ pub struct Usage {
     pub cached_tokens: u64,
 }
 
+/// LLM 发起的一次原生工具调用（OpenAI 兼容 tool_calls）。
+#[derive(Debug, Clone, Default)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    /// 参数 JSON 字符串（可能为空对象）。
+    pub arguments: String,
+}
+
 impl Usage {
     /// 按价格（每百万 token 美元）换算成本。
     pub fn cost(&self, price_in: f64, price_out: f64) -> f64 {
@@ -67,6 +76,8 @@ pub enum StreamEvent {
     Delta(String),
     /// 思考增量（reasoning_content / reasoning）。
     Reasoning(String),
+    /// 一次完整的工具调用（流结束时统一交付，已按 index 合并分片）。
+    ToolCall(ToolCall),
     /// 最终用量（流结束时发送一次）。
     Usage(Usage),
     /// 流结束。

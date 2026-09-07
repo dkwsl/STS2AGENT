@@ -61,7 +61,7 @@ pub(super) fn start_decision(
         session_notes.as_deref(),
         zh,
     );
-    match llm.chat_stream(&messages) {
+    match llm.chat_stream(&messages, Some(decide::tool_definitions())) {
         Ok(rx) => {
             let bt_tx2 = bt_tx.clone();
             tokio::spawn(async move {
@@ -97,6 +97,7 @@ pub(super) async fn consume_stream(
     bt_tx: mpsc::UnboundedSender<Backend>,
     cancel: CancellationToken,
 ) {
+    let mut tool_calls: Vec<sts2_llm::ToolCall> = Vec::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -113,8 +114,11 @@ pub(super) async fn consume_stream(
                     Some(StreamEvent::Usage(u)) => {
                         let _ = bt_tx.send(Backend::Usage(u));
                     }
+                    Some(StreamEvent::ToolCall(tc)) => {
+                        tool_calls.push(tc);
+                    }
                     Some(StreamEvent::Done) => {
-                        let _ = bt_tx.send(Backend::StreamDone);
+                        let _ = bt_tx.send(Backend::StreamDone { tool_calls });
                         return;
                     }
                     Some(StreamEvent::Error(e)) => {
@@ -122,7 +126,7 @@ pub(super) async fn consume_stream(
                         return;
                     }
                     None => {
-                        let _ = bt_tx.send(Backend::StreamDone);
+                        let _ = bt_tx.send(Backend::StreamDone { tool_calls });
                         return;
                     }
                 }

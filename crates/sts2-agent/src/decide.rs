@@ -68,7 +68,7 @@ pub async fn run_decide(
         None,
         zh,
     );
-    let mut rx = llm.chat_stream(&messages)?;
+    let mut rx = llm.chat_stream(&messages, Some(tool_definitions()))?;
 
     println!("--- LLM 决策 ---");
     while let Some(ev) = rx.recv().await {
@@ -80,6 +80,9 @@ pub async fn run_decide(
             StreamEvent::Reasoning(text) if show_thinking => {
                 eprint!("{text}");
                 std::io::stderr().flush().ok();
+            }
+            StreamEvent::ToolCall(tc) => {
+                println!("\n[工具调用] {}({})", tc.name, tc.arguments);
             }
             StreamEvent::Usage(u) => {
                 budget.record(&u, config.model.price_in, config.model.price_out);
@@ -176,7 +179,7 @@ pub fn build_messages(
 - 禁止使用任何 Markdown 语法（不要用 # 标题、**加粗**、- 列表、`代码块`、> 引用等）。界面无法渲染 Markdown，会原样显示符号。
 - 用纯文本回复，极简：只输出分析、结论、打法，不废话、不寒暄、不复述状态。
 - 回复控制在 5 句以内。能一句话说清就一句话。
-- 如果有行动，附 ACTION 行（可多行）：ACTION: <tool_name> | <param>=<value>
+- 操作游戏一律通过工具调用（tool call）发起，不要把 ACTION 写进文本。仅当工具调用不可用时才用 ACTION: <tool_name> | <param>=<value> 行代替。
 - 如果状态是 unknown，直接说"等待游戏加载"。
 - 你可以写 NOTE: <内容> 行来记录当前对局的经验教训（如"Jaw Worm 低血量会狂暴""这把缺防御"）。只在对局中有重要发现时才写 NOTE。{lang}"#
     ));
@@ -236,4 +239,61 @@ pub fn build_messages(
 pub enum ChatTurn {
     User(String),
     Assistant(String),
+}
+
+/// 工具定义（OpenAI 兼容 tools 数组）：游戏操作 + 本地请求（lookup/auto）。
+/// 与 parse.rs 的 normalize_tool 工具名对齐。
+pub fn tool_definitions() -> serde_json::Value {
+    use serde_json::json;
+
+    let f = |name: &str, desc: &str, params: serde_json::Value| {
+        json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": desc,
+                "parameters": params,
+            }
+        })
+    };
+    let obj = |props: serde_json::Value, required: &[&str]| {
+        let mut p = json!({ "type": "object", "properties": props });
+        if !required.is_empty() {
+            p["required"] = json!(required);
+        }
+        p
+    };
+    let int = |d: &str| json!({ "type": "integer", "description": d });
+    let s = |d: &str| json!({ "type": "string", "description": d });
+
+    json!([
+        f("lookup", "查询本地知识库/游戏Wiki获取卡牌、敌人、遗物、药水、事件的信息。不操作游戏，随时可用。",
+            obj(json!({ "query": s("名称或内部ID，优先英文ID（状态JSON的id字段）") }), &["query"])),
+        f("auto_start", "开启自主模式（玩家说\"自己打\"或单次操作指令时调用）。task 填任务描述。",
+            obj(json!({ "task": s("任务描述，如：自己打这层 / 出第二张牌") }), &["task"])),
+        f("auto_stop", "关闭自主模式。仅当任务已全部完成时调用。", obj(json!({}), &[])),
+        f("combat_play_card", "战斗：出手牌。target_type=AnyEnemy 的牌必须带 target（敌人 entity_id，如 JAW_WORM_0）。",
+            obj(json!({ "card_index": int("手牌索引"), "target": s("敌人entity_id，如 JAW_WORM_0") }), &["card_index"])),
+        f("combat_end_turn", "战斗：结束回合。", obj(json!({}), &[])),
+        f("use_potion", "战斗：使用药水。slot 是药水槽索引；单体药水须带 target。",
+            obj(json!({ "slot": int("药水槽索引"), "target": s("敌人entity_id") }), &["slot"])),
+        f("discard_potion", "战斗：丢弃药水。", obj(json!({ "slot": int("药水槽索引") }), &["slot"])),
+        f("map_choose_node", "地图：选择下一个节点。", obj(json!({ "node_index": int("节点索引") }), &["node_index"])),
+        f("rewards_claim", "奖励屏：领取奖励（从右到左领避免索引漂移）。", obj(json!({ "reward_index": int("奖励索引") }), &["reward_index"])),
+        f("rewards_pick_card", "卡牌奖励：选一张卡。", obj(json!({ "card_index": int("卡牌索引") }), &["card_index"])),
+        f("rewards_skip_card", "卡牌奖励：跳过。", obj(json!({}), &[])),
+        f("deck_select_card", "卡牌选择屏：选牌。选后若 can_confirm=true 必须 deck_confirm_selection。",
+            obj(json!({ "card_index": int("卡牌索引") }), &["card_index"])),
+        f("deck_confirm_selection", "卡牌选择屏：确认。", obj(json!({}), &[])),
+        f("deck_cancel_selection", "卡牌选择屏：取消。", obj(json!({}), &[])),
+        f("event_choose_option", "事件：选择选项（含 Proceed）。", obj(json!({ "option_index": int("选项索引") }), &["option_index"])),
+        f("event_advance_dialogue", "事件：推进对话。", obj(json!({}), &[])),
+        f("rest_choose_option", "休息点：选择（休息/锻造等）。", obj(json!({ "option_index": int("选项索引") }), &["option_index"])),
+        f("shop_purchase", "商店：购买商品。", obj(json!({ "item_index": int("商品索引") }), &["item_index"])),
+        f("proceed_to_map", "当前屏幕操作完成且回到地图（can_proceed=true 时）。", obj(json!({}), &[])),
+        f("relic_select", "遗物选择：拿遗物。", obj(json!({ "relic_index": int("遗物索引") }), &["relic_index"])),
+        f("relic_skip", "遗物选择：跳过。", obj(json!({}), &[])),
+        f("treasure_claim_relic", "宝箱：拿遗物。", obj(json!({ "relic_index": int("遗物索引") }), &["relic_index"])),
+        f("menu_select", "菜单/游戏结束：选择选项。", obj(json!({ "option": s("选项名") }), &["option"])),
+    ])
 }

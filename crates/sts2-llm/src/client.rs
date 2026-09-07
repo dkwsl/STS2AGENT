@@ -109,17 +109,23 @@ impl LlmClient {
         })
     }
 
-    /// 流式 chat。返回 `UnboundedReceiver<StreamEvent>`，后台任务推送 Delta/Reasoning/Usage/Done。
+    /// 流式 chat。返回 `UnboundedReceiver<StreamEvent>`，
+    /// 后台任务推送 Delta/Reasoning/ToolCall/Usage/Done。
+    /// `tools` 为 OpenAI 兼容的工具定义数组（None = 不启用工具调用）。
     pub fn chat_stream(
         &self,
         messages: &[ChatMessage],
+        tools: Option<Value>,
     ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
-        let body = json!({
+        let mut body = json!({
             "model": self.model,
             "messages": messages,
             "stream": true,
             "stream_options": {"include_usage": true},
         });
+        if let Some(t) = tools {
+            body["tools"] = t;
+        }
         let url = self.chat_url();
         let key = self.api_key.clone();
 
@@ -152,6 +158,8 @@ impl LlmClient {
             let mut stream = resp.bytes_stream();
             let mut buf = String::new();
             let mut usage = Usage::default();
+            // tool_calls 分片按 index 累积，流结束时统一交付
+            let mut tool_calls: Vec<(u64, String, String, String)> = Vec::new(); // (index, id, name, args)
 
             // 单次 chunk 读取加空闲超时：部分供应商不发 [DONE] 且保持连接，
             // 没有超时会永远挂起（UI 停留在"回复中"）。90 秒零输出视为流结束。
@@ -185,6 +193,15 @@ impl LlmClient {
                     }
                     let data = &line[6..];
                     if data == "[DONE]" {
+                        for (_, id, name, args) in &tool_calls {
+                            if !send(StreamEvent::ToolCall(crate::types::ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                arguments: args.clone(),
+                            })) {
+                                return;
+                            }
+                        }
                         if !send(StreamEvent::Usage(usage.clone())) {
                             return;
                         }
@@ -208,6 +225,34 @@ impl LlmClient {
                                 return;
                             }
                         }
+                        // tool_calls 分片：按 index 合并 id/name/arguments 增量
+                        if let Some(tcs) = parsed["choices"][0]["delta"]["tool_calls"].as_array() {
+                            for tc in tcs {
+                                let idx = tc["index"].as_u64().unwrap_or(0);
+                                let pos = tool_calls.iter().position(|(i, _, _, _)| *i == idx);
+                                let slot = match pos {
+                                    Some(p) => &mut tool_calls[p],
+                                    None => {
+                                        tool_calls.push((
+                                            idx,
+                                            String::new(),
+                                            String::new(),
+                                            String::new(),
+                                        ));
+                                        tool_calls.last_mut().unwrap()
+                                    }
+                                };
+                                if let Some(id) = tc["id"].as_str() {
+                                    slot.1 = id.to_string();
+                                }
+                                if let Some(name) = tc["function"]["name"].as_str() {
+                                    slot.2 = name.to_string();
+                                }
+                                if let Some(args) = tc["function"]["arguments"].as_str() {
+                                    slot.3.push_str(args);
+                                }
+                            }
+                        }
                         // usage (final chunk, may have empty choices)
                         if let Some(u) = parsed.get("usage") {
                             if !u.is_null() {
@@ -222,6 +267,15 @@ impl LlmClient {
                 }
             }
             // 流自然结束（无 [DONE]）
+            for (_, id, name, args) in &tool_calls {
+                if !send(StreamEvent::ToolCall(crate::types::ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                })) {
+                    return;
+                }
+            }
             if !send(StreamEvent::Usage(usage)) {
                 return;
             }

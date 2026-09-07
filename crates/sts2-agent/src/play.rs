@@ -90,9 +90,10 @@ pub async fn run_play(
             None,
             zh,
         );
-        let mut rx = llm.chat_stream(&messages)?;
+        let mut rx = llm.chat_stream(&messages, Some(crate::decide::tool_definitions()))?;
         let mut full_text = String::new();
         let mut turn_usage = Usage::default();
+        let mut tool_calls: Vec<sts2_llm::ToolCall> = Vec::new();
 
         while let Some(ev) = rx.recv().await {
             match ev {
@@ -104,6 +105,9 @@ pub async fn run_play(
                 StreamEvent::Reasoning(text) if show_thinking => {
                     eprint!("{text}");
                     std::io::stderr().flush().ok();
+                }
+                StreamEvent::ToolCall(tc) => {
+                    tool_calls.push(tc);
                 }
                 StreamEvent::Usage(u) => {
                     turn_usage = u.clone();
@@ -119,18 +123,22 @@ pub async fn run_play(
         }
         println!();
 
-        // 4. 解析 ACTION
-        let action_line = full_text
-            .lines()
-            .find(|l| l.trim_start().to_uppercase().starts_with("ACTION:"))
-            .unwrap_or("")
-            .to_string();
-
-        let action = match parse_action(&full_text) {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!("[解析失败] {e:#}，跳过本轮。");
-                continue;
+        // 4. 动作来源：原生 tool_calls 优先；无则回退解析文本 ACTION 行
+        let action = if let Some(tc) = tool_calls.first() {
+            match crate::parse::parse_tool_call(&tc.name, &tc.arguments) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("[工具调用解析失败] {e:#}，跳过本轮。");
+                    continue;
+                }
+            }
+        } else {
+            match parse_action(&full_text) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("[解析失败] {e:#}，跳过本轮。");
+                    continue;
+                }
             }
         };
 
@@ -217,11 +225,7 @@ pub async fn run_play(
             state_summary: summary,
             state_json: state_json.clone(),
             agent_text,
-            action: if action_line.is_empty() {
-                None
-            } else {
-                Some(action_line)
-            },
+            action: Some(format!("{} {}", action.tool, action.args)),
             result: Some(result_msg),
             success,
             user_input: None,

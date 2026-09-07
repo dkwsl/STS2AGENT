@@ -4,7 +4,7 @@
 //! 值自动推断类型：纯整数 → i64，否则字符串。
 //! 常见别名归一化：end_turn→combat_end_turn 等。
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 /// 解析后的动作。
@@ -12,6 +12,27 @@ use serde_json::{json, Value};
 pub struct ParsedAction {
     pub tool: String,
     pub args: Value,
+}
+
+/// 解析 LLM 的原生工具调用（OpenAI 兼容 tool_calls）。
+/// name 走 normalize_tool 归一化，arguments 为 JSON 字符串（空则视为无参）。
+pub fn parse_tool_call(name: &str, arguments: &str) -> Result<ParsedAction> {
+    let tool = normalize_tool(name);
+    let args: serde_json::Map<String, Value> = if arguments.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str::<Value>(arguments)
+            .with_context(|| format!("invalid tool arguments JSON: {arguments}"))?
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut args = args;
+    normalize_args(&tool, &mut args);
+    Ok(ParsedAction {
+        tool,
+        args: Value::Object(args),
+    })
 }
 
 /// 从 LLM 完整输出中提取并解析**所有** ACTION 行（支持多步操作）。

@@ -48,7 +48,9 @@ enum Backend {
     Delta(String),
     Reasoning(String),
     Usage(Usage),
-    StreamDone,
+    StreamDone {
+        tool_calls: Vec<sts2_llm::ToolCall>,
+    },
     StreamError(String),
     ExecDone {
         success: bool,
@@ -108,7 +110,7 @@ pub async fn run(
 
     let mut mode = Mode::Idle;
     let mut full_text = String::new();
-    let mut pending_actions: Vec<String> = Vec::new();
+    let mut pending_actions: Vec<sts2_agent::parse::ParsedAction> = Vec::new();
 
     // 首次只更新状态，不自动发起 LLM 分析——等用户指令
     state.push_chat(

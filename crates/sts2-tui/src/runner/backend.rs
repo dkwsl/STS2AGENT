@@ -33,7 +33,7 @@ pub(super) async fn handle_backend_msg(
     budget: &mut BudgetGuard,
     session: &mut Session,
     store: &SessionStore,
-    pending_actions: &mut Vec<String>,
+    pending_actions: &mut Vec<parse::ParsedAction>,
     zh: bool,
     max_turns: u32,
 ) -> bool {
@@ -74,7 +74,7 @@ pub(super) async fn handle_backend_msg(
             )
             .await;
         }
-        Backend::StreamDone => {
+        Backend::StreamDone { tool_calls } => {
             on_stream_done(
                 state,
                 mode,
@@ -85,6 +85,7 @@ pub(super) async fn handle_backend_msg(
                 bt_tx,
                 history,
                 pending_actions,
+                tool_calls,
                 zh,
             )
             .await;
@@ -137,7 +138,8 @@ async fn on_stream_done(
     mcp: &Arc<Mutex<McpClient>>,
     bt_tx: &mpsc::UnboundedSender<Backend>,
     history: &mut Vec<decide::ChatTurn>,
-    pending_actions: &mut Vec<String>,
+    pending_actions: &mut Vec<parse::ParsedAction>,
+    tool_calls: Vec<sts2_llm::ToolCall>,
     zh: bool,
 ) {
     // 校验：当前状态与 LLM 分析时是否一致（用户中间手动操作过则作废本次决策）
@@ -161,12 +163,27 @@ async fn on_stream_done(
         append_session_notes(state, config, &notes);
     }
 
-    // 2. 分离对话文本与 ACTION 行
+    // 2. 动作来源：原生 tool_calls 优先（与文本分离，不依赖格式解析）；
+    //    无 tool_calls 时回退解析文本 ACTION 行（供应商不支持 tools 时兜底）
+    let mut actions: Vec<parse::ParsedAction> = Vec::new();
+    for tc in &tool_calls {
+        match parse::parse_tool_call(&tc.name, &tc.arguments) {
+            Ok(a) => actions.push(a),
+            Err(e) => state.push_chat(MsgRole::System, format!("工具调用解析失败: {e:#}")),
+        }
+    }
     let action_lines: Vec<String> = full_text
         .lines()
         .filter(|l| parse::is_action_line(l))
         .map(|l| l.to_string())
         .collect();
+    if actions.is_empty() {
+        for l in &action_lines {
+            if let Ok(a) = parse::parse_action(l) {
+                actions.push(a);
+            }
+        }
+    }
     let chat_text: String = full_text
         .lines()
         .filter(|l| !parse::is_action_line(l) && !parse::is_note_line(l))
@@ -181,128 +198,123 @@ async fn on_stream_done(
     state.streaming_text.clear();
     state.reasoning_text.clear();
 
-    // 3. 处理 ACTION 行：lookup / auto_start / auto_stop 拦截，其余按自主模式门禁
-    if !action_lines.is_empty() {
-        let first_line = action_lines[0].clone();
-        match parse::parse_action(&first_line) {
-            Ok(action) => {
-                // 知识库查询：拦截，不发给游戏，查完注入上下文重新决策
-                if action.tool == "lookup" {
-                    let query = action
-                        .args
-                        .get("query")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let ok = handle_lookup(&query, state, config, mcp).await;
-                    full_text.clear();
-                    pending_actions.clear();
-                    *mode = Mode::Streaming;
-                    state.progress = Some("结合查询结果分析…".into());
-                    // lookup 不依赖具体状态：重取最新状态决策，
-                    // 避免 StreamDone 状态校验因快照过期而丢弃本轮输出
-                    let sj = match mcp.lock().await.get_game_state("json").await {
-                        Ok(s) if !s.is_empty() => s,
-                        _ => state.decision_state_json.clone(),
-                    };
-                    let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
-                    state.game_state = gs.clone();
-                    state.last_state_json = sj.clone();
-                    // 自主模式走自主 prompt（查询记录在上下文中）；非自主带恢复指令
-                    // （否则 user_msg=None + 非 auto_mode 会走"只给文字建议"分支丢任务）
-                    let resume_msg = if state.auto_mode {
-                        None
-                    } else if ok {
-                        Some("（系统）查询完成，结果已附在下方「知识库查询记录」中。请基于查询结果继续完成我之前的指令。".to_string())
-                    } else {
-                        Some("（系统）查询无效或已达上限（3 次）。请基于现有信息继续完成我之前的指令。".to_string())
-                    };
-                    start_decision(
-                        &gs,
-                        &sj,
-                        config,
-                        llm,
-                        bt_tx,
-                        history,
-                        resume_msg.as_deref(),
-                        zh,
-                        state,
-                    );
-                    return;
-                }
-
-                // 自主模式开启请求：LLM 理解用户指令后发起，内核记录状态。
-                // 丢弃同回复的剩余 ACTION，等状态稳定后进入自主循环重新决策。
-                if action.tool == "auto_start" {
-                    let task = action
-                        .args
-                        .get("task")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let already = state.auto_mode;
-                    state.auto_mode = true;
-                    state.no_action_streak = 0;
-                    state.task = if task.is_empty() {
-                        None
-                    } else {
-                        Some(task.clone())
-                    };
-                    if !already {
-                        state.push_chat(MsgRole::System, format!("🤖 自主模式开启（{task}）"));
-                    }
-                    full_text.clear();
-                    pending_actions.clear();
-                    *mode = Mode::FetchingState;
-                    state.progress = Some("等待状态稳定…".into());
-                    spawn_state_stabilize(mcp, bt_tx);
-                    return;
-                }
-
-                // 自主模式关闭请求：仅在自主模式中生效（任务完成的唯一 LLM 途径）
-                if action.tool == "auto_stop" {
-                    if state.auto_mode {
-                        state.auto_mode = false;
-                        state.task = None;
-                        state.push_chat(MsgRole::System, "🤖 自主模式结束。".into());
-                    }
-                    pending_actions.clear();
-                    *mode = Mode::Idle;
-                    state.progress = None;
-                    full_text.clear();
-                    return;
-                }
-
-                // 门禁：非自主模式下无条件否决一切游戏操作
-                if !state.auto_mode {
-                    state.push_chat(
-                        MsgRole::System,
-                        format!(
-                            "⛔ 已否决 {}：非自主模式不执行游戏操作。需要操作时请输出 ACTION: auto_start。",
-                            action.tool
-                        ),
-                    );
-                    pending_actions.clear();
-                    *mode = Mode::Idle;
-                    state.progress = None;
-                    full_text.clear();
-                    return;
-                }
-
-                // 自主模式内：正常动作入队执行（动作有产出即重置无动作计数）
-                state.no_action_streak = 0;
-                *pending_actions = action_lines[1..].to_vec();
-                *mode = Mode::Executing;
-                state.progress = Some(format!("执行 {}…", action.tool));
-                spawn_exec(mcp, bt_tx, &action.tool, action.args);
-            }
-            Err(e) => {
-                state.push_chat(MsgRole::System, format!("解析失败: {e:#}"));
-                *mode = Mode::Idle;
-            }
+    // 3. 处理动作：lookup / auto_start / auto_stop 拦截，其余按自主模式门禁
+    if let Some(action) = actions.first().cloned() {
+        // 知识库查询：拦截，不发给游戏，查完注入上下文重新决策
+        if action.tool == "lookup" {
+            let query = action
+                .args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let ok = handle_lookup(&query, state, config, mcp).await;
+            full_text.clear();
+            pending_actions.clear();
+            *mode = Mode::Streaming;
+            state.progress = Some("结合查询结果分析…".into());
+            // lookup 不依赖具体状态：重取最新状态决策，
+            // 避免 StreamDone 状态校验因快照过期而丢弃本轮输出
+            let sj = match mcp.lock().await.get_game_state("json").await {
+                Ok(s) if !s.is_empty() => s,
+                _ => state.decision_state_json.clone(),
+            };
+            let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
+            state.game_state = gs.clone();
+            state.last_state_json = sj.clone();
+            // 自主模式走自主 prompt（查询记录在上下文中）；非自主带恢复指令
+            // （否则 user_msg=None + 非 auto_mode 会走"只给文字建议"分支丢任务）
+            let resume_msg = if state.auto_mode {
+                None
+            } else if ok {
+                Some("（系统）查询完成，结果已附在下方「知识库查询记录」中。请基于查询结果继续完成我之前的指令。".to_string())
+            } else {
+                Some(
+                    "（系统）查询无效或已达上限（3 次）。请基于现有信息继续完成我之前的指令。"
+                        .to_string(),
+                )
+            };
+            start_decision(
+                &gs,
+                &sj,
+                config,
+                llm,
+                bt_tx,
+                history,
+                resume_msg.as_deref(),
+                zh,
+                state,
+            );
+            return;
         }
+
+        // 自主模式开启请求：LLM 理解用户指令后发起，内核记录状态。
+        // 丢弃同回复的剩余 ACTION，等状态稳定后进入自主循环重新决策。
+        if action.tool == "auto_start" {
+            let task = action
+                .args
+                .get("task")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let already = state.auto_mode;
+            state.auto_mode = true;
+            state.no_action_streak = 0;
+            state.task = if task.is_empty() {
+                None
+            } else {
+                Some(task.clone())
+            };
+            if !already {
+                state.push_chat(MsgRole::System, format!("🤖 自主模式开启（{task}）"));
+            }
+            full_text.clear();
+            pending_actions.clear();
+            *mode = Mode::FetchingState;
+            state.progress = Some("等待状态稳定…".into());
+            spawn_state_stabilize(mcp, bt_tx);
+            return;
+        }
+
+        // 自主模式关闭请求：仅在自主模式中生效（任务完成的唯一 LLM 途径）
+        if action.tool == "auto_stop" {
+            if state.auto_mode {
+                state.auto_mode = false;
+                state.task = None;
+                state.push_chat(MsgRole::System, "🤖 自主模式结束。".into());
+            }
+            pending_actions.clear();
+            *mode = Mode::Idle;
+            state.progress = None;
+            full_text.clear();
+            return;
+        }
+
+        // 门禁：非自主模式下无条件否决一切游戏操作
+        if !state.auto_mode {
+            state.push_chat(
+                MsgRole::System,
+                format!(
+                    "⛔ 已否决 {}：非自主模式不执行游戏操作。需要操作时请输出 ACTION: auto_start。",
+                    action.tool
+                ),
+            );
+            pending_actions.clear();
+            *mode = Mode::Idle;
+            state.progress = None;
+            full_text.clear();
+            return;
+        }
+
+        // 自主模式内：正常动作入队执行（动作有产出即重置无动作计数）
+        state.no_action_streak = 0;
+        actions.remove(0);
+        *pending_actions = actions;
+        *mode = Mode::Executing;
+        state.progress = Some(format!("执行 {}…", action.tool));
+        spawn_exec(mcp, bt_tx, &action.tool, action.args);
     } else {
-        // 没有 ACTION 行
+        // 无动作（tool_calls 与文本 ACTION 均为空）
         if state.auto_mode {
             // 自主模式中无 ACTION：不直接退出——纠正后重问（LLM 偶尔只输出文字分析）。
             // 连续 3 次无 ACTION 才视为放弃，退出自主模式。
@@ -418,7 +430,7 @@ async fn on_exec_done(
     budget: &mut BudgetGuard,
     session: &mut Session,
     store: &SessionStore,
-    pending_actions: &mut Vec<String>,
+    pending_actions: &mut Vec<parse::ParsedAction>,
     message: String,
     success: bool,
 ) {
@@ -440,20 +452,12 @@ async fn on_exec_done(
         pending_actions.clear();
     }
 
-    // 如果还有待执行动作且执行权限未被收回（打断会关掉两者），继续执行下一条
+    // 如果还有待执行动作且仍在自主模式，直接执行下一条（已解析，无需再 parse）
     if success && !pending_actions.is_empty() && state.auto_mode {
-        let next_line = pending_actions.remove(0);
+        let next = pending_actions.remove(0);
         *mode = Mode::Executing;
-        state.progress = Some("等待状态更新…".into());
-        // 解析下一条；解析失败则报错结束本轮队列
-        match parse::parse_action(&next_line) {
-            Ok(action) => {
-                spawn_exec(mcp, bt_tx, &action.tool, action.args);
-            }
-            Err(e) => {
-                let _ = bt_tx.send(Backend::Error(format!("解析失败: {e:#}")));
-            }
-        }
+        state.progress = Some(format!("执行 {}…", next.tool));
+        spawn_exec(mcp, bt_tx, &next.tool, next.args);
         return;
     }
 

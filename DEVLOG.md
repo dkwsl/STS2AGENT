@@ -674,3 +674,30 @@ STS2MCP Mod 在读取 shop 状态时会主动 `OpenInventory()` 打开商人界�
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
 - `--play --mock --max-turns 4`：4 轮 43s（大头为 LLM 响应），链路完整。
+
+---
+
+## 原生工具调用（tool_calls）替代文本 ACTION 行（已完成）
+
+### 背景
+LLM 偶尔把 `ACTION: combat_end_turn` 之类写在文本里——显示给了用户但解析/执行环节出问题，"打印了却不执行"。根因是文本通道承载结构化意图天然脆弱（格式偏差/混排/丢弃路径）。
+
+### 方案
+改用 OpenAI 兼容原生工具调用：LLM 经 `tool_calls` 结构化通道返回调用意图，与显示文本（content）彻底分离；文本 ACTION 行解析保留为回退（供应商不支持 tools 时兜底）。
+
+### 改动
+1. **sts2-llm**：
+   - `types.rs`：`ToolCall { id, name, arguments }`；`StreamEvent::ToolCall`。
+   - `client.rs`：`chat_stream(messages, tools)` 请求体支持 tools；流式解析 `delta.tool_calls` 分片（按 index 合并 id/name/arguments 增量），流结束统一交付。
+2. **sts2-agent**：
+   - `parse.rs`：`parse_tool_call(name, arguments)`（normalize_tool + args JSON 解析 + normalize_args）。
+   - `decide.rs`：`tool_definitions()` 生成 23 个工具定义（游戏操作 + lookup/auto_start/auto_stop）；system prompt 改为"操作一律走工具调用，文本 ACTION 仅回退"。
+3. **runner**：
+   - `Backend::StreamDone { tool_calls }`：consume_stream 累积后随 Done 交付。
+   - `on_stream_done`：动作来源 tool_calls 优先（逐个 parse_tool_call），空则回退文本 ACTION 解析；后续拦截/门禁/执行逻辑不变。
+   - `pending_actions` 类型改为 `Vec<ParsedAction>`（已解析，队列执行无需再 parse）。
+4. **play.rs / run_decide**：同步 tool_calls 支持。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
+- `--play --mock --max-turns 3`：地图→选点→战斗出牌全通（tool_calls/回退双路径）。

@@ -85,7 +85,7 @@ pub(super) async fn handle_user_intent(
     intent: &UserIntent,
     text: &str,
     state: &mut AppState,
-    pending_actions: &mut Vec<String>,
+    pending_actions: &mut Vec<sts2_agent::parse::ParsedAction>,
     mode: &mut Mode,
     config: &Config,
     llm: &LlmClient,
