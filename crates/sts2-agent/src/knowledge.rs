@@ -58,7 +58,8 @@ fn strip_keys(v: &mut Value) {
 /// 总输出截断到 1500 字。查不到返回空串。
 pub fn lookup_query(query: &str, knowledge_dir: &str) -> String {
     let dir = Path::new(knowledge_dir);
-    let norm = normalize_id(query.trim());
+    // 剥离单字母角色后缀（"STRIKE_R" → "STRIKE"）以匹配 PascalCase 表格列
+    let norm = normalize_id(&strip_card_suffix(query.trim()));
     if !dir.exists() || norm.is_empty() {
         return String::new();
     }
@@ -132,11 +133,11 @@ fn find_id_by_display_name(gs: &GameState, name: &str) -> Option<String> {
         return None;
     }
     if let Some(p) = &gs.player {
-        // 手牌：name → id
+        // 手牌：name → id（剥角色后缀）
         if let Some(hand) = &p.hand {
             for card in hand {
                 if card.name.trim().to_lowercase() == target && !card.id.is_empty() {
-                    return Some(card.id.clone());
+                    return Some(strip_card_suffix(&card.id));
                 }
             }
         }
@@ -198,6 +199,32 @@ pub fn search_game_knowledge(gs: &GameState, knowledge_dir: &str) -> String {
             &behavior_rows,
             &mut max_len_counter(&max_len),
         );
+    }
+
+    // 1.5 检测知识库未命中的手牌 → 显式列出，强制 LLM 查询或承认不确定
+    if dir.join("cards.md").exists() {
+        let mut unknown: Vec<String> = Vec::new();
+        if let Some(p) = &gs.player {
+            if let Some(hand) = &p.hand {
+                for card in hand {
+                    let q = strip_card_suffix(&card.id);
+                    if !q.is_empty()
+                        && lookup_in_table(std::slice::from_ref(&q), &dir.join("cards.md"))
+                            .is_empty()
+                        && lookup_in_table(std::slice::from_ref(&card.name), &dir.join("cards.md"))
+                            .is_empty()
+                    {
+                        unknown.push(format!("{} [id={}]", card.name, card.id));
+                    }
+                }
+            }
+        }
+        if !unknown.is_empty() {
+            result.push_str(&format!(
+                "\n[!] 以下手牌知识库未收录: {}\n对这些牌的效果不确定时，必须先 ACTION: lookup | query=<id或名称> 查询；查不到就明说\"不确定\"，禁止凭猜测出牌或评价。\n",
+                unknown.join("、")
+            ));
+        }
     }
 
     // 2. enemy_id → monsters.md + monster-behaviors.md
@@ -286,7 +313,7 @@ fn collect_card_ids(gs: &GameState) -> Vec<String> {
         if let Some(hand) = &p.hand {
             for card in hand {
                 if !card.id.is_empty() {
-                    ids.push(card.id.clone());
+                    ids.push(strip_card_suffix(&card.id));
                 }
                 if !card.name.is_empty() {
                     ids.push(card.name.clone());
@@ -309,6 +336,18 @@ fn collect_card_ids(gs: &GameState) -> Vec<String> {
         }
     }
     dedup_ids(ids)
+}
+
+/// 剥离卡牌内部 ID 的单字母角色后缀段：
+/// 真实游戏格式 "STRIKE_R"（R=Regent 等角色缩写），知识库表格是 "StrikeRegent"。
+/// 按下划线分段后丢弃长度 ≤2 的段，重组为 "STRIKE"，使 normalize 后可前缀命中。
+fn strip_card_suffix(id: &str) -> String {
+    let parts: Vec<&str> = id.split('_').filter(|s| s.len() > 2).collect();
+    if parts.is_empty() {
+        id.to_string()
+    } else {
+        parts.join("_")
+    }
 }
 
 /// 收集 GameState 中所有 enemy_id（entity_id 去掉 _0 后缀）。
@@ -587,6 +626,53 @@ mod tests {
         let (used, r) = lookup_query_smart("打击", &gs, dir);
         assert_eq!(used, "StrikeIronclad", "should fall back to internal id");
         assert!(r.contains("StrikeIronclad"));
+    }
+
+    #[test]
+    fn strip_card_suffix_matches_real_id_format() {
+        // 真实游戏 id 格式 "STRIKE_R" 应能命中知识库的 StrikeRegent/StrikeIronclad
+        let dir = "game-knowledge";
+        if !Path::new(dir).exists() {
+            return;
+        }
+        assert_eq!(strip_card_suffix("STRIKE_R"), "STRIKE");
+        let r = lookup_query("STRIKE_R", dir);
+        assert!(
+            r.contains("[卡牌]"),
+            "real-format id should hit cards.md: {r}"
+        );
+    }
+
+    #[test]
+    fn search_flags_unknown_hand_cards() {
+        let dir = "game-knowledge";
+        if !Path::new(dir).exists() {
+            return;
+        }
+        use sts2_core::{Card, Player};
+        let known = Card {
+            id: "BASH".into(),
+            name: "Bash".into(),
+            ..Default::default()
+        };
+        let unknown = Card {
+            id: "WEIRD_NEW_CARD_X".into(),
+            name: "怪牌".into(),
+            ..Default::default()
+        };
+        let p = Player {
+            hand: Some(vec![known, unknown]),
+            ..Default::default()
+        };
+        let gs = GameState {
+            state_type: StateType::Monster,
+            player: Some(p),
+            ..Default::default()
+        };
+        let result = search_game_knowledge(&gs, dir);
+        assert!(result.contains("知识库未收录"), "should flag unknown card");
+        assert!(result.contains("怪牌"));
+        assert!(!result.contains("Bash [id=BASH]"), "known card not flagged");
     }
 
     #[test]

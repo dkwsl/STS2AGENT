@@ -552,3 +552,10 @@ Agent 遇到不认识的牌时不会自己查知识库——之前只有决策�
 - `lookup_query_smart(query, gs, dir)`：原词查不到 → 从 GameState 找显示名对应的内部 ID（手牌/遗物/药水/敌人）→ 转换后重查。
 - TUI 显示转换提示（"显示名转内部 ID: xxx"），查询记录记 `[查询 原词 → ID]`。
 - 新增测试 `lookup_smart_falls_back_to_display_name`（中文"打击"→ StrikeIronclad）。
+
+### 修复：卡牌 ID 格式不匹配导致知识库从未命中 + 强制查询未知牌
+- **根因**：真实游戏 card.id 是 `STRIKE_R` 格式（下划线+单字母角色后缀），知识库表格列是 `StrikeRegent`（PascalCase）。normalize 后 `striker` vs `strikeregent` 互不包含——**自动注入从未命中过手牌**（敌人 `JAW_WORM`→`jawworm` 恰好能命中，掩盖了问题）。
+- **修复 1**：`strip_card_suffix()` 按下划线分段丢弃长度 ≤2 的段（`STRIKE_R`→`STRIKE`），应用于 collect_card_ids / lookup_query / find_id_by_display_name。
+- **修复 2**：search_game_knowledge 新增"未命中检测"——手牌中 id 和名称都查不到 cards.md 的牌，在注入的"游戏数据参考"里显式列出：`[!] 以下手牌知识库未收录: xxx [id=yyy]…必须先 ACTION: lookup 查询或明说"不确定"，禁止凭猜测出牌`。把"不认识"显式化，给 LLM 明确触发点。
+- **修复 3**：system prompt 把 lookup 从"遇到不认识的信息时"升级为"硬性要求"，特别强调对标注「知识库未收录」的牌必须查询或承认不确定。
+- 新增测试：`strip_card_suffix_matches_real_id_format`（STRIKE_R 命中 cards.md）、`search_flags_unknown_hand_cards`（未知牌被标注、已知牌不标注）。
