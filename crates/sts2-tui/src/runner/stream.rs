@@ -136,13 +136,22 @@ pub(super) async fn consume_stream(
 }
 
 /// 后台状态轮询：每 0.5 秒检查游戏状态是否变化，变化则发 StateChange。
+/// shop / fake_merchant 状态自动暂停（STS2MCP Mod 在读取 shop 状态时会
+/// 主动调用 OpenInventory 打开商人界面——若不暂停，用户手动关闭后 0.5s
+/// 就会被重新打开）。用户下次输入时经 IntentReady 恢复轮询。
 pub(super) async fn poll_state_loop(
     mcp: Arc<Mutex<McpClient>>,
     bt_tx: mpsc::UnboundedSender<Backend>,
     initial_state: String,
+    pause_flag: Arc<std::sync::atomic::AtomicBool>,
 ) {
+    use std::sync::atomic::Ordering;
     let mut last = initial_state;
     loop {
+        // 暂停期间完全不 GET（GET 在 shop 状态有副作用）
+        while pause_flag.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
         let sj = mcp
             .lock()
@@ -150,7 +159,21 @@ pub(super) async fn poll_state_loop(
             .get_game_state("json")
             .await
             .unwrap_or_default();
-        if !sj.is_empty() && sj != last {
+        if sj.is_empty() {
+            continue;
+        }
+        let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
+        if matches!(
+            gs.state_type,
+            sts2_core::StateType::Shop | sts2_core::StateType::FakeMerchant
+        ) {
+            pause_flag.store(true, Ordering::Relaxed);
+            let _ = bt_tx.send(Backend::Notice(
+                "已进入商店：暂停状态轮询（Mod 读取会自动打开商店界面）。输入任意消息恢复轮询。"
+                    .into(),
+            ));
+        }
+        if sj != last {
             last = sj.clone();
             let _ = bt_tx.send(Backend::StateChange(sj));
         }

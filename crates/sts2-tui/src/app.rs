@@ -1,5 +1,8 @@
 //! TUI 应用状态。
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
 use tokio_util::sync::CancellationToken;
 
 use sts2_core::{GameState, StateType};
@@ -47,6 +50,9 @@ pub struct AppState {
     pub lookup_context: String,
     /// 本次任务已发起的查询次数（防无限查询）。
     pub lookup_rounds: u32,
+    /// 暂停状态轮询（shop 状态时置 true：Mod 读取会自动打开商人界面；
+    /// 用户下次输入时恢复）。
+    pub poll_paused: Arc<AtomicBool>,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
     pub last_state_json: String,
     /// LLM 正在分析的状态 JSON（决策开始时的快照）。
@@ -94,6 +100,7 @@ impl AppState {
             session_id: String::new(),
             lookup_context: String::new(),
             lookup_rounds: 0,
+            poll_paused: Arc::new(AtomicBool::new(false)),
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),

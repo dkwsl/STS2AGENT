@@ -56,6 +56,10 @@ pub(super) async fn handle_backend_msg(
             if matches!(intent, UserIntent::Quit) {
                 return true;
             }
+            // 用户输入：恢复状态轮询（shop 暂停后由此恢复）
+            state
+                .poll_paused
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             handle_user_intent(
                 &intent,
                 &text,
@@ -119,6 +123,9 @@ pub(super) async fn handle_backend_msg(
         }
         Backend::StateChange(sj) => {
             on_state_change(state, mode, full_text, mcp, bt_tx, bt_rx, sj).await;
+        }
+        Backend::Notice(msg) => {
+            state.push_chat(MsgRole::System, msg);
         }
         Backend::Error(e) => {
             state.push_chat(MsgRole::System, e);
