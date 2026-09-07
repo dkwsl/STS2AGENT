@@ -83,9 +83,15 @@ pub(super) fn spawn_exec(
     });
 }
 
-/// 拦截 LLM 的 lookup 动作：查知识库 → 结果累积进 lookup_context → 复用原状态重新决策。
+/// 拦截 LLM 的 lookup 动作：查知识库（本地表格 → 游戏 Wiki 兜底）→
+/// 结果累积进 lookup_context → 复用原状态重新决策。
 /// 返回 true 表示已拦截并重新发起决策；false 表示查询无效/超限（调用方按无动作处理）。
-pub(super) fn handle_lookup(query: &str, state: &mut AppState, config: &Config) -> bool {
+pub(super) async fn handle_lookup(
+    query: &str,
+    state: &mut AppState,
+    config: &Config,
+    mcp: &Arc<Mutex<McpClient>>,
+) -> bool {
     if query.is_empty() || state.lookup_rounds >= 3 {
         state.push_chat(
             MsgRole::System,
@@ -100,28 +106,40 @@ pub(super) fn handle_lookup(query: &str, state: &mut AppState, config: &Config) 
         &state.game_state,
         &config.storage.game_knowledge_dir,
     );
-    if outcome.result.is_empty() {
+
+    let (used, result) = if outcome.result.is_empty() {
+        // 本地未命中 → 联网查游戏 Wiki 兜底
+        state.push_chat(MsgRole::System, "🌐 本地未命中，查询游戏 Wiki…".into());
+        let wiki = {
+            let mut m = mcp.lock().await;
+            sts2_agent::lookup::search_wiki_via_mcp(&mut m, query).await
+        };
+        if wiki.is_empty() {
+            (query.to_string(), String::new())
+        } else {
+            (format!("{query} (wiki)"), wiki)
+        }
+    } else {
+        (outcome.used, outcome.result)
+    };
+
+    if result.is_empty() {
         state
             .lookup_context
-            .push_str(&format!("[查询 {query}]: 知识库无记录\n"));
+            .push_str(&format!("[查询 {query}]: 知识库与 Wiki 均无记录\n"));
         state.push_chat(MsgRole::System, format!("未找到 {query}"));
     } else {
-        if outcome.used != query {
-            state.push_chat(
-                MsgRole::System,
-                format!("（显示名转内部 ID: {}）", outcome.used),
-            );
+        if used != query {
+            state.push_chat(MsgRole::System, format!("（实际命中: {used}）"));
         }
-        state.lookup_context.push_str(&format!(
-            "[查询 {query} → {}]:\n{}\n",
-            outcome.used, outcome.result
-        ));
+        state
+            .lookup_context
+            .push_str(&format!("[查询 {query} → {used}]:\n{result}\n"));
         state.push_chat(
             MsgRole::System,
             format!(
-                "✅ 已查询 {}（{} 字），继续分析…",
-                outcome.used,
-                outcome.result.chars().count()
+                "✅ 已查询 {used}（{} 字），继续分析…",
+                result.chars().count()
             ),
         );
     }

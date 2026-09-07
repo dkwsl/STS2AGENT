@@ -134,7 +134,7 @@ pub async fn run_play(
             }
         };
 
-        // 4.5 知识库查询：拦截，不发给游戏，结果注入下一轮上下文
+        // 4.5 知识库查询：拦截，不发给游戏，结果注入下一轮上下文（本地 → Wiki 兜底）
         if action.tool == "lookup" {
             let query = action
                 .args
@@ -148,14 +148,31 @@ pub async fn run_play(
             }
             lookup_rounds += 1;
             println!("[查询知识库] {query}…");
-            let (used, result) =
-                crate::lookup::lookup_query_smart(&query, &gs, &config.storage.game_knowledge_dir);
+            let (used, result) = {
+                let direct = crate::lookup::lookup_query_smart(
+                    &query,
+                    &gs,
+                    &config.storage.game_knowledge_dir,
+                );
+                if direct.1.is_empty() {
+                    // 本地未命中 → 联网查游戏 Wiki 兜底
+                    println!("[查询] 🌐 本地未命中，查询游戏 Wiki…");
+                    let wiki = crate::lookup::search_wiki_via_mcp(&mut mcp, &query).await;
+                    if wiki.is_empty() {
+                        (query.clone(), String::new())
+                    } else {
+                        (format!("{query} (wiki)"), wiki)
+                    }
+                } else {
+                    direct
+                }
+            };
             if result.is_empty() {
-                lookup_context.push_str(&format!("[查询 {query}]: 知识库无记录\n"));
+                lookup_context.push_str(&format!("[查询 {query}]: 知识库与 Wiki 均无记录\n"));
                 println!("[查询] 未找到 {query}");
             } else {
                 if used != query {
-                    println!("[查询] 显示名转内部 ID: {used}");
+                    println!("[查询] 实际命中: {used}");
                 }
                 lookup_context.push_str(&format!("[查询 {query} → {used}]:\n{result}\n"));
                 println!("[查询] 命中 {} 字，继续分析…", result.chars().count());

@@ -586,3 +586,21 @@ runner.rs 膨胀到 1067 行：`handle_backend_msg` 452 行、17 个参数，Str
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（37 passed）。
 - `--decide --mock` 与 `--play --mock --max-turns 2` 端到端行为不变（play 正常出牌、会话存盘、缓存命中 1472 tokens）。
+
+---
+
+## 联网查 Wiki 通道（已完成）
+
+### 设计
+lookup 查询升级为两级：本地 game-knowledge 表格 → 游戏 Mod 自带的 `search_wiki`（MCP 工具，数据来自游戏本体，覆盖卡牌/遗物、含升级变体、模糊匹配，仅限当前档案已解锁内容）。两级都未命中才报"无记录"。
+
+### 改动
+1. **lookup.rs `search_wiki_via_mcp(mcp, query)`**：调 MCP `search_wiki(query, item_type=all, limit=3)`，结果截断 1000 字；工具不存在（mock 模式）或返回 Error 时静默返回空（降级）。
+2. **actions.rs `handle_lookup`**：改 async 并接收 mcp；本地未命中 → UI 提示"🌐 本地未命中，查询游戏 Wiki…" → 调 wiki → 结果进 lookup_context（记录为 `[查询 q → q (wiki)]`）。
+3. **backend.rs**：调用处传 mcp + `.await`。
+4. **play.rs**：同步两级查询。
+5. **system prompt**：说明两级查询机制。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅（37 passed）。
+- `--decide --mock` 正常（mock 无 search_wiki 工具，静默降级不报错）。真实游戏下 wiki 查询走 Mod 数据。

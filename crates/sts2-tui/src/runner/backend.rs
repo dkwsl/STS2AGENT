@@ -190,7 +190,7 @@ async fn on_stream_done(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    if handle_lookup(&query, state, config) {
+                    if handle_lookup(&query, state, config, mcp).await {
                         // lookup 不改变游戏状态：复用原状态重新决策
                         full_text.clear();
                         pending_actions.clear();
