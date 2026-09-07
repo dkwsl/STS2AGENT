@@ -57,8 +57,21 @@ pub(super) async fn handle_backend_msg(
                 return true;
             }
             handle_user_intent(
-                &intent, &text, state, mode, config, llm, mcp, bt_tx, bt_rx, history, budget, zh,
-                max_turns, full_text,
+                &intent,
+                &text,
+                state,
+                pending_actions,
+                mode,
+                config,
+                llm,
+                mcp,
+                bt_tx,
+                bt_rx,
+                history,
+                budget,
+                zh,
+                max_turns,
+                full_text,
             )
             .await;
         }
@@ -343,8 +356,8 @@ async fn on_exec_done(
         pending_actions.clear();
     }
 
-    // 如果还有待执行动作，等 2 秒后继续执行下一条（游戏状态更新有延迟）
-    if success && !pending_actions.is_empty() {
+    // 如果还有待执行动作且执行权限未被收回（打断会关掉两者），继续执行下一条
+    if success && !pending_actions.is_empty() && (state.auto_mode || state.execute_actions) {
         let next_line = pending_actions.remove(0);
         *mode = Mode::Executing;
         state.progress = Some("等待状态更新…".into());

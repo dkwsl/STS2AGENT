@@ -101,6 +101,7 @@ pub(super) async fn handle_user_intent(
     intent: &UserIntent,
     text: &str,
     state: &mut AppState,
+    pending_actions: &mut Vec<String>,
     mode: &mut Mode,
     config: &Config,
     llm: &LlmClient,
@@ -113,9 +114,11 @@ pub(super) async fn handle_user_intent(
     max_turns: u32,
     full_text: &mut String,
 ) {
-    // 新的用户意图：重置本次任务的知识库查询状态
+    // 新的用户意图：重置任务状态，清空残留动作队列
+    // （否则打断自主模式后，队列中剩余动作仍会在 ExecDone 到达时继续执行）
     state.lookup_context.clear();
     state.lookup_rounds = 0;
+    pending_actions.clear();
 
     match intent {
         UserIntent::Quit => {}
