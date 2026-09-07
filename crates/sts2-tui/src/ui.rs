@@ -57,64 +57,91 @@ fn draw_state_panel(f: &mut Frame, state: &AppState, area: Rect) {
 }
 
 fn draw_chat_panel(f: &mut Frame, state: &AppState, area: Rect) {
+    use ratatui::text::{Line, Span, Text};
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" 对话 ")
         .border_style(Color::DarkGray);
+    let dim = Style::default().fg(Color::DarkGray);
 
-    let mut lines: Vec<String> = Vec::new();
+    // 组装带样式的行：思考过程（流式+历史）用浅色
+    let mut lines: Vec<Line> = Vec::new();
 
     // 历史对话
     for msg in &state.chat {
-        let prefix = match msg.role {
-            MsgRole::User => "你",
-            MsgRole::Agent => "Agent",
-            MsgRole::System => "系统",
+        let (prefix, styled) = match msg.role {
+            MsgRole::User => ("你", false),
+            MsgRole::Agent => ("Agent", false),
+            MsgRole::System => ("系统", false),
+            MsgRole::Thinking => ("思考", true),
         };
-        lines.push(format!("[{prefix}]"));
+        let head = if styled {
+            Span::styled(format!("[{prefix}]"), dim)
+        } else {
+            Span::raw(format!("[{prefix}]"))
+        };
+        lines.push(Line::from(vec![head]));
         for line in msg.text.lines() {
-            lines.push(format!("  {line}"));
+            let l = format!("  {line}");
+            lines.push(if styled {
+                Line::from(Span::styled(l, dim))
+            } else {
+                Line::from(Span::raw(l))
+            });
         }
-        lines.push(String::new());
+        lines.push(Line::from(Span::raw("")));
     }
 
-    // 流式输出
-    if !state.streaming_text.is_empty() {
-        lines.push("[Agent]".into());
-        for line in state.streaming_text.lines() {
-            lines.push(format!("  {line}"));
-        }
-    }
-
-    // 思考
+    // 流式思考（时序在回答之前，浅色实时滚动）
     if state.show_thinking && !state.reasoning_text.is_empty() {
-        lines.push(String::new());
-        lines.push("(思考)".into());
-        for line in state.reasoning_text.lines().take(10) {
-            lines.push(format!("  {line}"));
+        lines.push(Line::from(Span::styled("(思考中)", dim)));
+        for line in state.reasoning_text.lines() {
+            lines.push(Line::from(Span::styled(format!("  {line}"), dim)));
+        }
+    }
+
+    // 流式回答
+    if !state.streaming_text.is_empty() {
+        lines.push(Line::from(Span::raw("[Agent]")));
+        for line in state.streaming_text.lines() {
+            lines.push(Line::from(Span::raw(format!("  {line}"))));
         }
     }
 
     // Pending
     if let Some(action) = &state.pending_action {
-        lines.push(String::new());
-        lines.push(format!("⏳ 待确认: {action}"));
-        lines.push("  输入「执行」确认 / 输入其他文字与 Agent 沟通".into());
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::raw(format!("⏳ 待确认: {action}"))));
+        lines.push(Line::from(Span::raw(
+            "  输入「执行」确认 / 输入其他文字与 Agent 沟通".to_string(),
+        )));
     }
 
-    // 手动换行（不用 Wrap，使行数准确，scroll offset 精确）
+    // 手动换行（保持每行样式；行数准确使 scroll offset 精确）
     let visible = area.height.saturating_sub(2) as usize;
     let max_width = area.width.saturating_sub(2) as usize;
-    let wrapped: Vec<String> = lines.iter().flat_map(|l| wrap_line(l, max_width)).collect();
+    let wrapped: Vec<Line> = lines
+        .into_iter()
+        .flat_map(|l| {
+            let styled = l.spans.first().map(|s| s.style).unwrap_or_default();
+            let raw: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            wrap_line(&raw, max_width).into_iter().map(move |w| {
+                if styled.fg.is_some() {
+                    Line::from(Span::styled(w, styled))
+                } else {
+                    Line::from(Span::raw(w))
+                }
+            })
+        })
+        .collect();
 
-    let content = wrapped.join("\n");
-    let content_lines = content.lines().count() as u16;
+    let text = Text::from(wrapped);
+    let content_lines = text.lines.len() as u16;
     let max_scroll = content_lines.saturating_sub(visible as u16);
     let scroll_offset = max_scroll.saturating_sub(state.chat_scroll);
 
-    let p = Paragraph::new(content)
-        .scroll((scroll_offset, 0))
-        .block(block);
+    let p = Paragraph::new(text).scroll((scroll_offset, 0)).block(block);
     f.render_widget(p, area);
 }
 

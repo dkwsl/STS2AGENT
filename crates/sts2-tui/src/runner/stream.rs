@@ -77,7 +77,7 @@ pub(super) fn start_decision(
     }
 }
 
-/// 打断当前 LLM 流：cancel + 排空 stale 消息 + 清空流式文本。
+/// 打断当前 LLM 流：cancel + 排空 stale 消息 + 固化思考（浅色保留）+ 清空流式文本。
 pub(super) fn abort_current_llm(
     state: &mut AppState,
     bt_rx: &mut mpsc::UnboundedReceiver<Backend>,
@@ -86,8 +86,11 @@ pub(super) fn abort_current_llm(
     state.current_cancel.cancel();
     // 排空所有 stale 消息
     while bt_rx.try_recv().is_ok() {}
+    if !state.reasoning_text.is_empty() {
+        let t = std::mem::take(&mut state.reasoning_text);
+        state.push_chat(crate::app::MsgRole::Thinking, t);
+    }
     state.streaming_text.clear();
-    state.reasoning_text.clear();
     full_text.clear();
 }
 

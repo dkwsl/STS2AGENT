@@ -43,7 +43,9 @@ pub(super) async fn handle_backend_msg(
             full_text.push_str(&t);
         }
         Backend::Reasoning(t) => {
-            state.reasoning_text.push_str(&t);
+            if state.show_thinking {
+                state.reasoning_text.push_str(&t);
+            }
         }
         Backend::Usage(u) => {
             state.last_usage = u.clone();
@@ -230,7 +232,11 @@ async fn on_stream_done(
         history.push(decide::ChatTurn::Assistant(chat_text.clone()));
     }
     state.streaming_text.clear();
-    state.reasoning_text.clear();
+    // 固化本轮思考过程为浅色历史消息（不丢弃；不进 LLM 对话历史）
+    if !state.reasoning_text.is_empty() {
+        let t = std::mem::take(&mut state.reasoning_text);
+        state.push_chat(MsgRole::Thinking, t);
+    }
 
     // 记录本轮到 session（R5：TUI 会话也保存对话/动作/用量；result 由 ExecDone 回填）
     session.turns.push(sts2_agent::storage::TurnRecord {
@@ -422,7 +428,10 @@ fn on_stale_decision(
     current_sj: String,
 ) {
     state.streaming_text.clear();
-    state.reasoning_text.clear();
+    if !state.reasoning_text.is_empty() {
+        let t = std::mem::take(&mut state.reasoning_text);
+        state.push_chat(MsgRole::Thinking, t);
+    }
     full_text.clear();
     // 明确告知用户：输出已显示但被作废（否则看起来像"打印了却没执行"）
     state.push_chat(

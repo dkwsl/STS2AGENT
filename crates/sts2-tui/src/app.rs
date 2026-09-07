@@ -16,6 +16,8 @@ pub enum MsgRole {
     User,
     Agent,
     System,
+    /// LLM 思考过程（仅 UI 展示，浅色；不进 LLM 对话历史）。
+    Thinking,
 }
 
 /// UI 状态。
