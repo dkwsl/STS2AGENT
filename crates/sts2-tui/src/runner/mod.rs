@@ -219,9 +219,6 @@ pub async fn run(
                         KeyCode::Esc => {
                             should_quit = true;
                         }
-                        KeyCode::Char('t') => {
-                            state.toggle_thinking();
-                        }
                         KeyCode::Char(c) => {
                             state.input_char(c);
                         }
