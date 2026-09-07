@@ -258,11 +258,11 @@ sts2agent/
 ## 13. 先决条件与风险
 
 1. ~~**真实 Mod 接口契约**~~：已解决。从本地 clone 的 `STS2MCP` 取得完整契约（§9），`sts2-core` 数据模型与 Mock 据此对齐。
-2. **MCP Rust SDK 可用性**：实现时评估现有 SDK；若不契合则手写 stdio JSON-RPC 子集（仅 initialize/tools-list/tools-call），成本可控（已计入计划）。
-3. **决策质量**：规则启发式为基线，足够演示与解释；如需更强可平滑升级为搜索算法（trait 已留口）。
-4. **LLM 供应商差异**：薄 reqwest 客户端兼容 OpenAI/DeepSeek/本地，思考模式按供应商分支处理。
-5. **演示鲁棒性**：Mock + 真实接口双轨，避免演示依赖真实游戏环境。
-6. **真实联调依赖游戏+Mod**：演示与开发阶段用 Mock；真实联调需本机运行游戏并装 `STS2_MCP` Mod（非阻塞当前开发）。
+2. ~~**MCP Rust SDK 可用性**~~：已解决。手写 stdio JSON-RPC 子集（initialize/tools-list/tools-call），实现于 `sts2-mcp`。
+3. ~~**决策质量**~~：已解决（方案变更）——实际决策由 LLM 驱动 + 知识库/工具调用增强，`sts2-decision` 保留 trait 作扩展位（未使用）。
+4. ~~**LLM 供应商差异**~~：已解决。薄 reqwest 客户端兼容 OpenAI/DeepSeek/清华平台/本地 vLLM；tools（function calling）+ 文本 ACTION 行双路径。
+5. ~~**演示鲁棒性**~~：已解决。Mock + 真实接口双轨。
+6. **真实联调依赖游戏+Mod**：游戏版本更新后 Mod 需从源码重编译（上游 Release 不兼容）。Mod 在 shop 状态读取会 OpenInventory 打开商人界面（上游副作用，StateBuilder.cs ~551）——已通过移除后台轮询规避。
 7. **中文输出不稳定**：`--zh` 时 LLM 思考过程偶尔仍用英文。待修复：可在 system prompt 中强化指令、或在 streaming 层对 reasoning_content 追加语言约束、或改用结构化 JSON 输出（`response_format`）强制字段语言。
 
 ---
@@ -273,18 +273,28 @@ sts2agent/
 
 ### 核查结论（2026-09-06，接替 agent 复核 "Major overhaul" commit 6bdb711 后状态）
 
-| 编号 | 状态 | 说明 / 修复位置 |
+| 编号 | 状态 | 说明 / 修复位置（行号为重构前参考，模块拆分后见 runner/ 各文件） |
 |---|---|---|
-| T1 | ✅ 已修 | Esc 退出 + 文字"退出"（`llm_parse_intent` 识别 QUIT，`IntentReady` 分支 runner.rs:403 拦截返回 quit=true；主循环 272 保存 session 后退出） |
-| T2 | ✅ 已修 | system prompt 重写为"牌手顾问+对话伙伴"（decide.rs:104-167），明确区分"明确指令→ACTION"/"对话→纯文字"，给出正反例 |
-| T3 | ⚠️ 待定 | 当前 `↑=chat_scroll+3`→看上方历史（runner.rs:258-264），实为 TUI 标准约定（vim/less/man 一致）。PLAN 原"对调"要求疑基于误判，建议保持现状，待用户实测确认 |
-| T4 | ✅ 已修 | 流式 Delta 写入 `streaming_text`（独立渲染），不触发 `push_chat`；仅新消息 `push_chat` 时 `chat_scroll=0`（app.rs:143）。流式期间用户可自由浏览 |
-| T5 | ✅ 已修 | 限帧 66ms（runner.rs:308）+ `while try_recv` 批量排空后台消息（282）+ `yield_now` 让出 CPU |
-| T6 | ✅ 已修 | 退出路径 `session.finished=true; store.save(&session)`（runner.rs:272-278）；每轮 ExecDone 也存盘（600） |
-| T7 | ✅ 已修 | Enter 时若非 Idle 调 `abort_current_llm`（cancel + 排空 bt_rx + 清空 streaming_text，runner.rs:95/231）；consume_stream 有 `cancel.cancelled()` 分支（333） |
-| T8 | ✅ 已修 | Enter 处理器 push 一次 `state.chat`（237）；`handle_user_intent` 只 push `history`（LLM 上下文，非 UI），UI 不重复 |
-| T9 | ✅ 已修 | `wrap_line` 按显示宽度手动换行（CJK=2列，ui.rs:105-150），不截断内容；scroll offset 按 wrap 后行数计算 |
-| T10 | ✅ 已修 | `action_lines` 多行 → `pending_actions` 队列连续执行（runner.rs:511/608-634）；每步执行后重取状态；auto_mode 默认自动执行，用户可打断 |
+| T1 | ✅ 已修 | Esc 退出 + 文字"退出"（关键词意图分类，`IntentReady` 拦截返回 quit=true；主循环保存 session 后退出） |
+| T2 | ✅ 已修 | system prompt 重写为"牌手顾问"（decide.rs），明确区分"明确指令→操作"/"对话→纯文字"，给出正反例 |
+| T3 | ⚠️ 待定 | 当前 `↑=看上方历史`（runner/mod.rs 按键处理），实为 TUI 标准约定（vim/less/man 一致）。PLAN 原"对调"要求疑基于误判，建议保持现状，待用户实测确认 |
+| T4 | ✅ 已修 | 流式 Delta 写入 `streaming_text`（独立渲染），不触发 `push_chat`；仅新消息 `push_chat` 时 `chat_scroll=0`。流式期间用户可自由浏览 |
+| T5 | ✅ 已修 | 限帧 66ms + `while try_recv` 批量排空后台消息 + `yield_now` 让出 CPU |
+| T6 | ✅ 已修 | 退出路径保存 session；每轮 StreamDone/ExecDone 也存盘（R5 补全后 TUI 会话含完整 turns） |
+| T7 | ✅ 已修 | Enter 时若非 Idle 调 `abort_current_llm`（cancel + 排空 bt_rx + 清空 streaming_text）；consume_stream 有 `cancel.cancelled()` 分支 |
+| T8 | ✅ 已修 | Enter 处理器 push 一次 `state.chat`；`handle_user_intent` 只 push `history`（LLM 上下文），UI 不重复 |
+| T9 | ✅ 已修 | `wrap_line` 按显示宽度手动换行（CJK=2列），不截断内容；scroll offset 按 wrap 后行数计算 |
+| T10 | ✅ 已修 | 自主模式经 auto_start/auto_stop 门禁（见 §14.1）；动作队列 `Vec<ParsedAction>` 连续执行，每步后等状态稳定再继续 |
+
+### 14.1 自主模式最终设计（2026-09-07 重构两轮后）
+
+- 开启/关闭由 LLM 显式请求：`ACTION: auto_start | task=...` / `ACTION: auto_stop`（本地拦截）。
+- Rust 内核是唯一权威：`state.auto_mode` 只被这两个请求或用户"停"（Rust 直关）改变。
+- **门禁**：非自主模式下一切游戏操作被无条件否决（⛔），lookup 查询不受限。
+- 单次指令 = auto_start + 操作 + auto_stop 三连；持续自主 = auto_start 后逐步操作。
+- 防误退：无 ACTION → 纠正重问，连续 3 次（no_action_streak）才退出。
+- 提速：动作执行无前置等待；稳定检测 0.8s + 双取 0.3s。
+- 无后台轮询（Mod 的 shop OpenInventory 副作用），状态读取只由用户意图/自主循环触发。
 
 ### T1. 无法退出程序
 
