@@ -70,7 +70,6 @@ pub(super) async fn handle_backend_msg(
                 history,
                 budget,
                 zh,
-                max_turns,
                 full_text,
             )
             .await;
@@ -114,7 +113,7 @@ pub(super) async fn handle_backend_msg(
         }
         Backend::StateReady(sj) => {
             on_state_ready(
-                state, mode, config, llm, mcp, bt_tx, history, full_text, zh, sj,
+                state, mode, config, llm, mcp, bt_tx, history, full_text, zh, max_turns, sj,
             )
             .await;
         }
@@ -182,8 +181,8 @@ async fn on_stream_done(
     state.streaming_text.clear();
     state.reasoning_text.clear();
 
-    // 3. 执行 ACTION（或 lookup 拦截）
-    if !action_lines.is_empty() && state.execute_actions {
+    // 3. 处理 ACTION 行：lookup / auto_start / auto_stop 拦截，其余按自主模式门禁
+    if !action_lines.is_empty() {
         let first_line = action_lines[0].clone();
         match parse::parse_action(&first_line) {
             Ok(action) => {
@@ -231,7 +230,59 @@ async fn on_stream_done(
                     return;
                 }
 
-                // 正常动作：入队执行
+                // 自主模式开启请求：LLM 理解用户指令后发起，内核记录状态。
+                // 丢弃同回复的剩余 ACTION，等状态稳定后进入自主循环重新决策。
+                if action.tool == "auto_start" {
+                    let task = action
+                        .args
+                        .get("task")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    state.auto_mode = true;
+                    state.task = if task.is_empty() {
+                        None
+                    } else {
+                        Some(task.clone())
+                    };
+                    state.push_chat(MsgRole::System, format!("🤖 自主模式开启（{task}）"));
+                    full_text.clear();
+                    pending_actions.clear();
+                    *mode = Mode::FetchingState;
+                    state.progress = Some("等待状态稳定…".into());
+                    spawn_state_stabilize(mcp, bt_tx);
+                    return;
+                }
+
+                // 自主模式关闭请求：任务完成/LLM 主动停止
+                if action.tool == "auto_stop" {
+                    state.auto_mode = false;
+                    state.task = None;
+                    pending_actions.clear();
+                    state.push_chat(MsgRole::System, "🤖 自主模式结束。".into());
+                    *mode = Mode::Idle;
+                    state.progress = None;
+                    full_text.clear();
+                    return;
+                }
+
+                // 门禁：非自主模式下无条件否决一切游戏操作
+                if !state.auto_mode {
+                    state.push_chat(
+                        MsgRole::System,
+                        format!(
+                            "⛔ 已否决 {}：非自主模式不执行游戏操作。需要操作时请输出 ACTION: auto_start。",
+                            action.tool
+                        ),
+                    );
+                    pending_actions.clear();
+                    *mode = Mode::Idle;
+                    state.progress = None;
+                    full_text.clear();
+                    return;
+                }
+
+                // 自主模式内：正常动作入队执行
                 *pending_actions = action_lines[1..].to_vec();
                 *mode = Mode::Executing;
                 state.progress = Some(format!("执行 {}…", action.tool));
@@ -243,15 +294,13 @@ async fn on_stream_done(
             }
         }
     } else {
-        // 没有 ACTION 行，或 execute_actions 为 false
+        // 没有 ACTION 行
         // auto_mode 下 LLM 没给 ACTION = 它认为该停了 → 退出自主模式
-        if state.auto_mode && action_lines.is_empty() {
+        if state.auto_mode {
             state.auto_mode = false;
             state.task = None;
             state.push_chat(MsgRole::System, "自主模式结束。".into());
         }
-        // 非 auto_mode 时执行权限只持续一轮，用完即关
-        state.execute_actions = state.auto_mode;
         *mode = Mode::Idle;
         state.progress = None; // 回答完成：清除"LLM 回复中…"等进度提示
         state.last_poll = std::time::Instant::now();
@@ -356,7 +405,7 @@ async fn on_exec_done(
     }
 
     // 如果还有待执行动作且执行权限未被收回（打断会关掉两者），继续执行下一条
-    if success && !pending_actions.is_empty() && (state.auto_mode || state.execute_actions) {
+    if success && !pending_actions.is_empty() && state.auto_mode {
         let next_line = pending_actions.remove(0);
         *mode = Mode::Executing;
         state.progress = Some("等待状态更新…".into());
@@ -437,6 +486,7 @@ async fn on_state_ready(
     history: &mut Vec<decide::ChatTurn>,
     full_text: &mut String,
     zh: bool,
+    max_turns: u32,
     sj: String,
 ) {
     let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
@@ -462,6 +512,19 @@ async fn on_state_ready(
         state.progress = None;
         return;
     }
+    // 自主循环轮数上限（防失控）
+    if state.current_turn >= max_turns {
+        state.auto_mode = false;
+        state.task = None;
+        state.finished = true;
+        state.progress = Some(format!("已达最大轮数 {max_turns}"));
+        state.push_chat(
+            MsgRole::System,
+            format!("已达最大轮数 {max_turns}，自主模式结束。"),
+        );
+        *mode = Mode::Idle;
+        return;
+    }
     // 反射动作：机械操作不问 LLM（省 token）
     if let Some((tool, args)) = try_reflex_action(&gs) {
         spawn_exec(mcp, bt_tx, &tool, args);
@@ -469,7 +532,6 @@ async fn on_state_ready(
         state.progress = Some(format!("执行 {tool}…"));
         return;
     }
-    state.execute_actions = true;
     *mode = Mode::Streaming;
     state.progress = Some("分析中…".into());
     full_text.clear();

@@ -1,4 +1,9 @@
-//! 用户意图：关键词分类 + 各意图的处理（确认/拒绝/打断/自主/对话）。
+//! 用户意图：关键词分类 + 各意图的处理（打断/拒绝/对话）。
+//!
+//! 自主模式的开启/关闭不由这里判定——用户说"自己打"/"执行"等一律走 Chat，
+//! 由决策 LLM 理解后输出 `ACTION: auto_start | task=...` / `ACTION: auto_stop`
+//! 请求 Rust 内核切换（见 backend.rs 的拦截与门禁）。
+//! 唯一例外：用户喊"停/打断"直接在 Rust 侧关闭自主模式（不经过 LLM，更可靠）。
 
 use std::sync::Arc;
 
@@ -16,17 +21,14 @@ use super::stream::{abort_current_llm, start_decision};
 /// 用户意图。
 #[derive(Debug, Clone)]
 pub(super) enum UserIntent {
-    Confirm,
     Reject,
     Interrupt,
     Quit,
-    /// 进入自主模式：用户明确说了"自己打"等。
-    AutoPlay,
     Chat(String),
 }
 
 /// 关键词意图分类（无 LLM，省一次调用）。
-/// 未命中关键词的输入归 Chat，由决策 LLM 判断是否为操作指令（单次执行语义）。
+/// 未命中关键词的输入归 Chat，由决策 LLM 理解并决定是否发起 auto_start。
 pub(super) fn parse_intent(text: &str) -> UserIntent {
     let lower = text.to_lowercase();
     let trimmed = text.trim();
@@ -34,26 +36,8 @@ pub(super) fn parse_intent(text: &str) -> UserIntent {
     if trimmed.contains("退出") || lower == "quit" || lower == "exit" {
         return UserIntent::Quit;
     }
-    // 自主模式：只认「自己打」类，其余一律当对话
-    if trimmed.contains("自己打") {
-        return UserIntent::AutoPlay;
-    }
     if trimmed == "打断" || trimmed == "停" || lower == "stop" || lower == "interrupt" {
         return UserIntent::Interrupt;
-    }
-    if trimmed == "执行"
-        || trimmed == "继续"
-        || trimmed == "好"
-        || trimmed == "确认"
-        || trimmed == "可以"
-        || lower == "ok"
-        || lower == "go"
-        || lower == "yes"
-        || trimmed.contains("这样做")
-        || trimmed.contains("就这么做")
-        || trimmed.contains("就这么打")
-    {
-        return UserIntent::Confirm;
     }
     if trimmed == "不"
         || trimmed == "换一个"
@@ -111,7 +95,6 @@ pub(super) async fn handle_user_intent(
     history: &mut Vec<decide::ChatTurn>,
     budget: &mut BudgetGuard,
     zh: bool,
-    max_turns: u32,
     full_text: &mut String,
 ) {
     // 新的用户意图：重置任务状态，清空残留动作队列
@@ -125,7 +108,6 @@ pub(super) async fn handle_user_intent(
         UserIntent::Interrupt => {
             abort_current_llm(state, bt_rx, full_text);
             state.auto_mode = false;
-            state.execute_actions = false;
             state.task = None;
             // 排空所有 stale 后台消息，防止旧的 StreamDone 触发执行
             while bt_rx.try_recv().is_ok() {}
@@ -133,53 +115,12 @@ pub(super) async fn handle_user_intent(
             history.clear();
             state.streaming_text.clear();
             *mode = Mode::Idle;
+            state.progress = None;
             full_text.clear();
-        }
-        UserIntent::AutoPlay => {
-            state.auto_mode = true;
-            state.execute_actions = true;
-            state.task = Some(text.to_string());
-            history.push(decide::ChatTurn::User(text.to_string()));
-            state.progress = Some("自主模式启动…".into());
-            let _ = refresh_and_decide(
-                state,
-                mode,
-                full_text,
-                config,
-                llm,
-                mcp,
-                bt_tx,
-                history,
-                Some(text),
-                zh,
-            )
-            .await;
-        }
-        UserIntent::Confirm => {
-            // 确认执行：只执行本轮 ACTION，不进入持续自主模式
-            history.push(decide::ChatTurn::User(text.to_string()));
-            state.execute_actions = true; // 临时开启，执行完一轮后自动关闭
-            state.task = Some(text.to_string());
-            state.pending_action = None;
-            state.progress = Some("LLM 处理中…".into());
-            let _ = refresh_and_decide(
-                state,
-                mode,
-                full_text,
-                config,
-                llm,
-                mcp,
-                bt_tx,
-                history,
-                Some(text),
-                zh,
-            )
-            .await;
         }
         UserIntent::Reject => {
             history.push(decide::ChatTurn::User(text.to_string()));
             state.pending_action = None;
-            state.execute_actions = false;
             state.task = None;
             state.progress = Some("重新决策中…".into());
             if refresh_and_decide(
@@ -202,11 +143,10 @@ pub(super) async fn handle_user_intent(
             }
         }
         UserIntent::Chat(msg) => {
-            // 对话/操作指令：由决策 LLM 判断是否输出 ACTION。
-            // execute_actions=true + 非 auto_mode = 单次执行语义（执行一轮即停），
-            // 纯对话（无 ACTION）则不操作游戏。
+            // 对话/操作指令/自主请求：由决策 LLM 理解。
+            // LLM 需要操作游戏时输出 ACTION: auto_start（内核拦截开启自主模式），
+            // 非自主模式下的裸操作 ACTION 会被内核无条件否决。
             history.push(decide::ChatTurn::User(msg.clone()));
-            state.execute_actions = true;
             state.task = None;
             state.progress = Some("LLM 回复中…".into());
             let _ = refresh_and_decide(
@@ -225,15 +165,10 @@ pub(super) async fn handle_user_intent(
         }
     }
 
-    // 公共：检查预算/轮数
+    // 公共：检查预算
     if budget.is_over_budget() {
         state.finished = true;
         state.progress = Some(format!("预算超限: {}", budget.summary()));
-        *mode = Mode::Idle;
-    }
-    if state.current_turn >= max_turns && matches!(intent, UserIntent::Confirm) {
-        state.finished = true;
-        state.progress = Some(format!("已达最大轮数 {max_turns}"));
         *mode = Mode::Idle;
     }
 }

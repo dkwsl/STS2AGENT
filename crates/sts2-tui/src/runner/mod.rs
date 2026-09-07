@@ -109,7 +109,6 @@ pub async fn run(
     let mut mode = Mode::Idle;
     let mut full_text = String::new();
     let mut pending_actions: Vec<String> = Vec::new();
-    state.execute_actions = false;
 
     // 首次只更新状态，不自动发起 LLM 分析——等用户指令
     state.push_chat(

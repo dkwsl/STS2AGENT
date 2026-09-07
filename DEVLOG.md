@@ -627,3 +627,31 @@ STS2MCP Mod 在读取 shop 状态时会主动 `OpenInventory()` 打开商人界�
 ### 验证
 - `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
 - `--play --mock --max-turns 2` 端到端正常（自主循环 stabilize→LLM→执行未受影响）。
+
+---
+
+## 自主模式重构：LLM 显式请求 + Rust 权威门禁（已完成）
+
+### 设计
+- LLM 通过两个内部请求切换自主模式（类似 lookup 的本地拦截）：
+  - `ACTION: auto_start | task=<任务>`：LLM 理解用户指令（"自己打"/单次操作）后发起
+  - `ACTION: auto_stop`：任务完成/需要停止时发起
+- Rust 内核是自主模式的唯一权威：`auto_mode` 只被这两个请求和用户打断（"停"）改变。
+- **门禁**：非自主模式下，一切游戏操作 ACTION 被 Rust 无条件否决（提示 ⛔ + 丢弃），只有 lookup 查询不受限。
+- 单次指令语义 = LLM 输出 `auto_start` + 操作 + `auto_stop` 三连；持续自主 = `auto_start` 后逐步 ACTION，完成时 `auto_stop`。
+
+### 改动
+1. **parse.rs**：normalize_tool 加 auto_start/auto_stop 别名。
+2. **intent.rs**：删 AutoPlay/Confirm 意图分类（"自己打"/"执行"走 Chat，由 LLM 发 auto_start）；Interrupt 保留 Rust 侧直关（不经 LLM 更可靠）；删 max_turns 的 Confirm 检查（移到自主循环）。
+3. **backend.rs on_stream_done**：
+   - auto_start 拦截：设 auto_mode/task，丢弃同回复剩余 ACTION，稳定后进入自主循环；
+   - auto_stop 拦截：关自主、清队列、Idle；
+   - 门禁：非自主的裸操作 → ⛔ 否决；
+4. **backend.rs on_state_ready**：自主循环入口加 max_turns 上限（防失控）。
+5. **app.rs**：删 execute_actions 字段（单次执行语义废弃，统一 auto_mode 门禁）。
+6. **decide.rs**：执行权限规则重写（教 LLM auto_start/auto_stop 用法与三连模式）。
+7. **play.rs**：拦截 auto_start（忽略，play 即自主）/auto_stop（结束对局）。
+
+### 验证
+- `cargo fmt --check` ✅、`cargo clippy --all-targets -- -D warnings` ✅、`cargo test --workspace` ✅。
+- `--play --mock --max-turns 4` 端到端：地图→选点→战斗多 ACTION→领奖励，链路正常。

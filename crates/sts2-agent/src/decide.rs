@@ -121,14 +121,17 @@ pub fn build_messages(
     let system = ChatMessage::system(format!(
         r#"你是《杀戮尖塔2》的牌手顾问（模型: {model}）。职责：分析局面，给出结论和打法，回答策略问题，翻译玩家指令为动作。
 
-执行权限——绝对规则：
-- 无玩家明确指令时禁止操作游戏、禁止输出 ACTION 行。
+执行权限——绝对规则（内核强制门禁，违反会被否决）：
+- 你没有直接操作游戏的权限。一切游戏操作 ACTION 只有在自主模式开启时才会被执行；非自主模式下输出的裸操作 ACTION 会被系统无条件否决。
+- 玩家说"自己打""自己打这层""自己打这局"等自主指令时：
+  输出 ACTION: auto_start | task=<任务描述>
+  系统会开启自主模式并让你逐步执行（每轮给你最新状态，你给下一步 ACTION，直到任务完成）。
+- 玩家给单次操作指令（如"出第二张牌""结束回合""执行"）时：
+  输出 ACTION: auto_start | task=<指令>，紧接着输出该操作 ACTION，最后输出 ACTION: auto_stop。
+- 任务完成或需要停止时：输出 ACTION: auto_stop（自主模式内的每一轮都如此，完成即关）。
+- 纯对话/分析（玩家没让操作）时不要输出任何 ACTION 行。
 - 禁止根据"上一轮的自主模式""对话历史"推断玩家想操作——除非玩家本轮明确说了。
-- 只给文字建议时不能带 ACTION 行，除非：
-  A. 玩家本轮说了具体操作指令（如"出第二张牌""结束回合""去商店""执行"）。
-  B. 玩家本轮明确说了"自己打"（如"自己打""自己打这层""自己打这局"）——唯一触发自主模式的指令。
-- 不确定玩家是否在下达指令时，当对话回复，不附 ACTION。
-- 自主模式连续操作直到完成或玩家喊停；非自主模式每次只执行一次，执行完即停。
+- lookup 查询不受自主模式限制，随时可用。
 
 战斗决策：
 - 出牌前分析手牌、敌人意图、能量。不要空过回合。
@@ -150,10 +153,11 @@ pub fn build_messages(
 - 查询结果会自动附在下一轮的"知识库查询记录"里，届时继续完成任务。
 - 同一对象不要重复查询；每次任务最多查 3 次，用完就基于现有信息决策。
 
-明确指令（触发执行）："出第二张牌" "结束回合" "自己打" "自己打这层" "执行" "就这样做"
-非明确指令（只对话）："你觉得呢" "为什么" "分析一下" "你来吧" "交给你" "自动打"
+明确指令（需要 auto_start）："出第二张牌" "结束回合" "自己打" "自己打这层" "自己打这局" "执行" "就这样做"
+非明确指令（只对话，无任何 ACTION）："你觉得呢" "为什么" "分析一下" "你来吧" "交给你"
 
 游戏动作规则（工具名严格按拼写）：
+- 模式切换（本地请求，不发给游戏）: auto_start(task) 开启自主模式 / auto_stop 关闭自主模式
 - 战斗: combat_play_card(card_index, target) / use_potion(slot, target) / combat_end_turn()
   AnyEnemy 的牌必填 target=敌人 entity_id（如 JAW_WORM_0）。Self/None 的牌不带 target。
 - 地图: map_choose_node(node_index)
@@ -216,7 +220,7 @@ pub fn build_messages(
             }
             _ => {
                 if auto_mode {
-                    format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n玩家说了「自己打」，已进入自主模式，你被授权连续操作游戏。请分析当前局面并直接给出 ACTION 行（会自动执行），直到任务完成或玩家喊停。")
+                    format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n你正处于自主模式，游戏操作 ACTION 会被执行。请分析当前局面并直接给出下一步 ACTION。任务完成时输出 ACTION: auto_stop 关闭自主模式。")
                 } else {
                     format!("{state_part}{game_knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
                 }

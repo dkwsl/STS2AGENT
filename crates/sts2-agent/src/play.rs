@@ -180,6 +180,17 @@ pub async fn run_play(
             continue;
         }
 
+        // 4.6 模式请求拦截（play 本身就是自主循环）：
+        // auto_start 忽略（已处于自主），auto_stop 结束对局
+        if action.tool == "auto_start" {
+            println!("[模式] 自主模式已开启（忽略重复请求）");
+            continue;
+        }
+        if action.tool == "auto_stop" {
+            println!("[模式] LLM 请求结束自主模式");
+            break;
+        }
+
         // 5. 执行
         println!(
             "[执行] {} | {}",

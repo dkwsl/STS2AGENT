@@ -202,6 +202,9 @@ fn normalize_tool(name: &str) -> String {
         "menu_select" => "menu_select".into(),
         // 知识库查询（本地拦截，不发给游戏）
         "query" | "query_knowledge" | "knowledge" | "lookup" => "lookup".into(),
+        // 自主模式切换（本地拦截，不发给游戏）
+        "auto" | "auto_on" | "autoplay" | "auto_start" => "auto_start".into(),
+        "stop_auto" | "auto_off" | "stop_play" | "auto_stop" => "auto_stop".into(),
         other => other.to_string(),
     }
 }
