@@ -34,20 +34,20 @@ This document is for agents that operate the game through MCP. It is not a full 
 
 - Read real-time `intent` first. Do not rely only on the monster name.
 - For unfamiliar `enemy_id`:
-  - read [monsters.md](/Users/chart/Documents/project/sp/docs/game-knowledge/monsters.md)
-  - then read [monster-behaviors.md](/Users/chart/Documents/project/sp/docs/game-knowledge/monster-behaviors.md)
+  - read [monsters.md](/game-knowledge/monsters.md)
+  - then read [monster-behaviors.md](/game-knowledge/monster-behaviors.md)
 - `MultiAttackIntent` usually raises the value of block and damage reduction.
 - If the passive summary contains `PowerCmd.Apply<...>`, the monster may enter combat with a built-in mechanic.
 
 ## Events
 
 - Check whether `event.options[]` are locked and whether an option is `is_proceed`.
-- For unfamiliar events, start with [events.md](/Users/chart/Documents/project/sp/docs/game-knowledge/events.md).
+- For unfamiliar events, start with [events.md](/game-knowledge/events.md).
 - Do not infer outcomes from the event title alone. Use the current option text in the live state.
 
 ## Characters
 
-- Read [characters.md](/Users/chart/Documents/project/sp/docs/game-knowledge/characters.md) for starting deck, relics, and unlock chains.
+- Read [characters.md](/game-knowledge/characters.md) for starting deck, relics, and unlock chains.
 - Opening deck and relics strongly affect early route and reward choices.
 
 ## Project Capability Boundaries

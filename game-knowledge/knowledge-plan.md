@@ -24,6 +24,11 @@ The current knowledge base has two layers:
   - `potion-behaviors.md`
   - `events.md`
 
+## Regeneration
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:/Users/chart/Documents/project/sp/scripts/generate-sts2-knowledge.ps1"
+```
 
 ## Next Steps
 

@@ -51,6 +51,8 @@ pub struct AppState {
     pub last_usage: sts2_llm::Usage,
     /// 本轮决策对应的用户输入（StreamDone 时写入 TurnRecord）。
     pub pending_user_input: Option<String>,
+    /// 待用户确认的自主模式请求（task 文本）。Some = 等待 y/n。
+    pub pending_auto_start: Option<String>,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
     pub last_state_json: String,
     /// LLM 正在分析的状态 JSON（决策开始时的快照）。
@@ -100,6 +102,7 @@ impl AppState {
             no_action_streak: 0,
             last_usage: sts2_llm::Usage::default(),
             pending_user_input: None,
+            pending_auto_start: None,
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),

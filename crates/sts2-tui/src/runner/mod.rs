@@ -161,6 +161,45 @@ pub async fn run(
                             if text.is_empty() {
                                 continue;
                             }
+                            // 自主模式开启请求待确认：y/n 直接判定，其他文字取消询问转普通对话
+                            if state.pending_auto_start.is_some() {
+                                let lower = text.trim().to_lowercase();
+                                let confirm = matches!(
+                                    lower.as_str(),
+                                    "y" | "yes" | "好" | "同意" | "可以" | "确定" | "开" | "开吧"
+                                );
+                                let reject = matches!(
+                                    lower.as_str(),
+                                    "n" | "no" | "不" | "不要" | "拒绝" | "取消" | "不行"
+                                );
+                                if confirm || reject {
+                                    state.push_chat(MsgRole::User, text.clone());
+                                    backend::resolve_auto_start(
+                                        confirm,
+                                        &mut state,
+                                        &mut mode,
+                                        &mut full_text,
+                                        &mcp,
+                                        &bt_tx,
+                                    );
+                                    continue;
+                                }
+                                if lower == "停" || lower == "stop" || lower == "interrupt" {
+                                    // 打断：取消询问即可
+                                    state.pending_auto_start = None;
+                                    state.push_chat(MsgRole::User, text.clone());
+                                    state.push_chat(MsgRole::System, "已取消自主模式确认。".into());
+                                    mode = Mode::Idle;
+                                    state.progress = None;
+                                    continue;
+                                }
+                                // 其他文字：取消询问，落入普通对话流程
+                                state.pending_auto_start = None;
+                                state.push_chat(
+                                    MsgRole::System,
+                                    "已取消自主模式确认，按普通对话处理。".into(),
+                                );
+                            }
                             // 打断当前流
                             if !matches!(mode, Mode::Idle) && !matches!(mode, Mode::PendingConfirm)
                             {

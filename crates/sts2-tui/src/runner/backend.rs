@@ -131,6 +131,33 @@ pub(super) async fn handle_backend_msg(
     false
 }
 
+/// 用户对自主模式开启请求的答复（y/n）。
+/// 同意：开启自主模式并进入稳定等待→自主循环；拒绝：驳回本次请求，回 Idle。
+pub(super) fn resolve_auto_start(
+    confirm: bool,
+    state: &mut AppState,
+    mode: &mut Mode,
+    full_text: &mut String,
+    mcp: &Arc<Mutex<McpClient>>,
+    bt_tx: &mpsc::UnboundedSender<Backend>,
+) {
+    let task = state.pending_auto_start.take().unwrap_or_default();
+    full_text.clear();
+    if confirm {
+        state.auto_mode = true;
+        state.no_action_streak = 0;
+        state.task = if task.is_empty() { None } else { Some(task) };
+        state.push_chat(MsgRole::System, "🤖 自主模式开启。".into());
+        *mode = Mode::FetchingState;
+        state.progress = Some("等待状态稳定…".into());
+        spawn_state_stabilize(mcp, bt_tx);
+    } else {
+        state.push_chat(MsgRole::System, "⛔ 已驳回本次自主模式请求。".into());
+        *mode = Mode::Idle;
+        state.progress = None;
+    }
+}
+
 /// LLM 流结束：校验状态一致性 → 处理输出（NOTE/对话文本）→ 拦截 lookup / 执行 ACTION。
 #[allow(clippy::too_many_arguments)]
 async fn on_stream_done(
@@ -282,22 +309,24 @@ async fn on_stream_done(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let already = state.auto_mode;
-            state.auto_mode = true;
-            state.no_action_streak = 0;
-            state.task = if task.is_empty() {
-                None
-            } else {
-                Some(task.clone())
-            };
-            if !already {
-                state.push_chat(MsgRole::System, format!("🤖 自主模式开启（{task}）"));
+            if state.auto_mode {
+                // 已处于自主模式：重复请求直接忽略
+                full_text.clear();
+                pending_actions.clear();
+                return;
             }
+            // 请求用户确认：内核不自行开启自主模式
+            state.pending_auto_start = Some(task.clone());
+            state.push_chat(
+                MsgRole::System,
+                format!(
+                    "🤖 Agent 请求开启自主模式（{task}）。\n输入 y 同意 / n 拒绝（其他文字将取消该请求并当作普通对话）。"
+                ),
+            );
             full_text.clear();
             pending_actions.clear();
-            *mode = Mode::FetchingState;
-            state.progress = Some("等待状态稳定…".into());
-            spawn_state_stabilize(mcp, bt_tx);
+            *mode = Mode::PendingConfirm;
+            state.progress = Some("等待确认自主模式…".into());
             return;
         }
 
