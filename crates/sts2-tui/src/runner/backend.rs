@@ -170,6 +170,24 @@ pub(super) fn resolve_auto_start(
     }
 }
 
+/// 链截断：超过 60 条时保留最近 40 条，且截后首条不能是 tool 消息
+/// （OpenAI 协议要求 tool 必须紧跟 assistant.tool_calls）。
+pub(super) fn trim_auto_chain(state: &mut AppState) {
+    if state.auto_messages.len() <= 60 {
+        return;
+    }
+    let keep_from = state.auto_messages.len() - 40;
+    state.auto_messages.drain(..keep_from);
+    while state
+        .auto_messages
+        .first()
+        .map(|m| m.role == "tool")
+        .unwrap_or(false)
+    {
+        state.auto_messages.remove(0);
+    }
+}
+
 /// 自主链式续发：不重建 prompt，直接把当前 auto_messages 链再发一轮。
 /// 用于 tool 结果回填后 / nudge 后的增量决策。
 pub(super) fn continue_auto_stream(
@@ -177,11 +195,8 @@ pub(super) fn continue_auto_stream(
     config: &Config,
     bt_tx: &mpsc::UnboundedSender<Backend>,
 ) {
-    // 链截断保护：超过 60 条消息时丢弃最旧的中段（保留最近 40 条）
-    if state.auto_messages.len() > 60 {
-        let keep_from = state.auto_messages.len() - 40;
-        state.auto_messages.drain(..keep_from);
-    }
+    // 链截断保护：不切断 assistant(tool_calls) ↔ tool 配对
+    trim_auto_chain(state);
     let cancel = CancellationToken::new();
     state.current_cancel = cancel.clone();
     let llm2 = LlmClient::from_config(&config.model);
@@ -257,8 +272,10 @@ async fn on_stream_done(
         .collect();
     if actions.is_empty() {
         for l in &action_lines {
-            if let Ok(a) = parse::parse_action(l) {
-                actions.push(a);
+            match parse::parse_action(l) {
+                Ok(a) if !a.tool.is_empty() => actions.push(a),
+                Ok(_) => {} // 空 tool 名的行跳过
+                Err(_) => {}
             }
         }
     }
@@ -280,18 +297,30 @@ async fn on_stream_done(
     }
     state.streaming_text.clear();
 
-    // 自主模式：本轮 assistant 输出（文本 + tool_calls）压入 agentic 消息链
-    if state.auto_mode {
-        let calls: Vec<(String, String, String)> = tool_calls
-            .iter()
-            .map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone()))
-            .collect();
+    // 自主模式：本轮 assistant 输出（文本 + tool_calls）压入 agentic 消息链。
+    // 若动作来自文本 ACTION 回退（无原生 tool_calls），构造伪调用入链——
+    // OpenAI 协议要求 tool 消息必须紧跟 assistant.tool_calls，否则平台 400。
+    if state.auto_mode && !actions.is_empty() {
+        let calls: Vec<(String, String, String)> = if tool_calls.is_empty() {
+            actions
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (format!("text_{i}"), a.tool.clone(), a.args.to_string()))
+                .collect()
+        } else {
+            tool_calls
+                .iter()
+                .map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone()))
+                .collect()
+        };
+        let content = if chat_text.is_empty() {
+            " ".to_string() // 部分平台拒绝空 content 的 assistant.tool_calls 消息
+        } else {
+            chat_text.clone()
+        };
         state
             .auto_messages
-            .push(sts2_llm::ChatMessage::assistant_tool_calls(
-                chat_text.clone(),
-                &calls,
-            ));
+            .push(sts2_llm::ChatMessage::assistant_tool_calls(content, &calls));
     }
 
     // 记录本轮到 session（R5：TUI 会话也保存对话/动作/用量；result 由 ExecDone 回填）
@@ -455,15 +484,17 @@ async fn on_stream_done(
         if state.recent_actions.len() > 5 {
             state.recent_actions.remove(0);
         }
-        // 首个动作的 tool_call_id 暂存（ExecDone 结果回填链用）
-        state.last_exec = Some((
+        // 首个动作的 tool_call_id 暂存（ExecDone 结果回填链用）。
+        // 文本回退时入链的伪 id 为 text_{i}，此处动作是 actions[0] → text_0。
+        let call_id = if tool_calls.is_empty() {
+            "text_0".to_string()
+        } else {
             tool_calls
                 .first()
                 .map(|tc| tc.id.clone())
-                .unwrap_or_default(),
-            true,
-            String::new(),
-        ));
+                .unwrap_or_default()
+        };
+        state.last_exec = Some((call_id, true, String::new()));
         *pending_actions = actions;
         *mode = Mode::Executing;
         state.progress = Some(format!("执行 {}…", action.tool));
@@ -774,10 +805,7 @@ async fn on_state_ready(
     state
         .auto_messages
         .push(sts2_llm::ChatMessage::tool(tool_id, tool_content));
-    if state.auto_messages.len() > 60 {
-        let keep_from = state.auto_messages.len() - 40;
-        state.auto_messages.drain(..keep_from);
-    }
+    trim_auto_chain(state);
     *mode = Mode::Streaming;
     state.progress = Some("分析中…".into());
     full_text.clear();

@@ -17,6 +17,9 @@ pub struct ParsedAction {
 /// 解析 LLM 的原生工具调用（OpenAI 兼容 tool_calls）。
 /// name 走 normalize_tool 归一化，arguments 为 JSON 字符串（空则视为无参）。
 pub fn parse_tool_call(name: &str, arguments: &str) -> Result<ParsedAction> {
+    if name.trim().is_empty() {
+        bail!("empty tool name");
+    }
     let tool = normalize_tool(name);
     let args: serde_json::Map<String, Value> = if arguments.trim().is_empty() {
         Default::default()
