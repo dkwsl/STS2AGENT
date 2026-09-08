@@ -61,8 +61,6 @@ pub struct AppState {
     pub queued_auto_reply: Option<bool>,
     /// 当前 LLM 流开始时刻（用于顶栏显示等待秒数）。
     pub stream_started: Option<std::time::Instant>,
-    /// LLM 流进行中标志（流式期间的状态监听 watcher 依此启停）。
-    pub streaming_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 当前策略计划（LLM 经 PLAN: 行声明，跨回合注入 prompt）。
     pub plan: Option<String>,
     /// 自主回合的消息链（agentic loop：user → assistant(tool_calls) → tool → …）。
@@ -125,7 +123,6 @@ impl AppState {
             pending_auto_start: None,
             queued_auto_reply: None,
             stream_started: None,
-            streaming_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             plan: None,
             auto_messages: Vec::new(),
             last_exec: None,

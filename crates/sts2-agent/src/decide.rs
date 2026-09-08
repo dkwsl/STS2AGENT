@@ -249,7 +249,7 @@ pub fn build_messages(
             }
             _ => {
                 if auto_mode {
-                    format!("{state_part}{game_knowledge_part}{notes_part}{plan_part}{task_part}\n\n你正处于自主模式，游戏操作工具调用会被执行。尽量一次性给出本回合的全部操作（可连续多个工具调用，如出多张牌后结束回合），减少往返；只有当需要看到操作结果才能决定下一步时才停下等下一轮。任务全部完成时才调用 auto_stop；未完成绝不调用。不要只给文字分析而不给操作。")
+                    format!("{state_part}{game_knowledge_part}{notes_part}{plan_part}{task_part}\n\n你正处于自主模式，游戏操作 ACTION 会被执行。每轮必须给出下一步游戏操作 ACTION——这是硬性要求，不要只给文字分析。只有确认整个任务已全部完成时才输出 ACTION: auto_stop；任务未完成时绝不输出 auto_stop。")
                 } else {
                     format!("{state_part}{game_knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
                 }
