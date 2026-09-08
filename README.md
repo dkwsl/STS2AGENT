@@ -179,7 +179,7 @@ args = ["-X", "utf8", "C:\\path\\to\\STS2MCP\\mcp\\server.py"]
 
 游戏跑在 Windows、Agent 跑在 WSL 时，WSL 侧无法直连游戏的 `localhost:15526`（Mod 的 HTTP server 只绑定 Windows 的 localhost）。解法：**让 Python MCP server 跑在 Windows 端**，Agent 通过 `powershell.exe` 桥接它的 stdio。
 
-1. **准备包装脚本**：仓库根目录的 `win_server.py` 就是这个包装器——把它放到 WSL 可访问的位置（本仓库根目录即可）。它的作用：用 Windows Python 以 UTF-8 编码读取并执行 WSL 路径下的 `server.py`（进程实际跑在 Windows 端，其 `localhost` 就是游戏所在端）。
+1. **准备包装脚本**：参考仓库根目录的 `win_server.example.py`，在同目录复制一份为 `win_server.py`（此文件含个人路径，已 gitignore 不入库），把其中的 `mcp_dir` 改成你的实际路径。它的作用：用 Windows Python 以 UTF-8 编码读取并执行 WSL 路径下的 `server.py`（进程实际跑在 Windows 端，其 `localhost` 就是游戏所在端）。
 
 2. **配置 `config/config.toml`**：
 
@@ -196,7 +196,6 @@ args = ["-c", "python '\\\\wsl.localhost\\Ubuntu-24.04\\home\\<user>\\sts2agent\
 **常见坑**：
 - 连接挂起/返回 `Error:`：先确认游戏开着、Mod 已启用（游戏日志应出现 `[STS2 MCP] server started`）；
 - 检查有没有残留的端口转发劫持 15526：`netsh interface portproxy show v4tov4`（有就 `delete` 掉）；
-- Mod 在 shop 状态读取时会自动打开商店界面，属上游行为，本 Agent 已通过"无后台轮询"规避。
 
 ### 切换 LLM 供应商
 
