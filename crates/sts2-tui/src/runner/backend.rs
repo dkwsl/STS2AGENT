@@ -98,6 +98,11 @@ pub(super) async fn handle_backend_msg(
         }
         Backend::StreamError(e) => {
             state.push_chat(MsgRole::System, format!("LLM 错误: {e}"));
+            // 错误也保留已产生的思考（浅色），不让推理凭空消失
+            if !state.reasoning_text.is_empty() {
+                let t = std::mem::take(&mut state.reasoning_text);
+                state.push_chat(MsgRole::Thinking, t);
+            }
             state.streaming_text.clear();
             *mode = Mode::Idle;
             state.progress = None;
