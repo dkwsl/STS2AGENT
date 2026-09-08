@@ -101,6 +101,7 @@ pub(super) async fn handle_user_intent(
     // （否则打断自主模式后，队列中剩余动作仍会在 ExecDone 到达时继续执行）
     state.lookup_context.clear();
     state.lookup_rounds = 0;
+    state.queued_auto_reply = None;
     state.pending_user_input = Some(text.to_string());
     pending_actions.clear();
 

@@ -32,13 +32,28 @@ pub fn draw(f: &mut Frame, state: &AppState) {
 }
 
 fn draw_top_bar(f: &mut Frame, state: &AppState, area: Rect) {
+    // 右上角：自主模式标志
+    if state.auto_mode {
+        let badge = Paragraph::new("🤖 自主模式")
+            .style(
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(ratatui::layout::Alignment::Right);
+        f.render_widget(badge, area);
+    }
+    let progress = match (state.stream_started, &state.progress) {
+        (Some(t0), Some(p)) if p.contains("中…") => {
+            format!("{p} {:.0}s", t0.elapsed().as_secs_f32())
+        }
+        (_, Some(p)) => p.clone(),
+        (Some(_), None) => "LLM 响应中…".into(),
+        _ => "就绪".into(),
+    };
     let title = format!(
         " STS2 Agent · R{} │ in={} out={} │ ${:.4} │ {}",
-        state.current_turn,
-        state.total_input,
-        state.total_output,
-        state.total_cost,
-        state.progress.as_deref().unwrap_or("就绪"),
+        state.current_turn, state.total_input, state.total_output, state.total_cost, progress,
     );
     let style = Style::default()
         .fg(state.status_color())

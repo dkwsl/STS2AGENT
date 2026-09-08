@@ -61,6 +61,7 @@ pub(super) fn start_decision(
         session_notes.as_deref(),
         zh,
     );
+    state.stream_started = Some(std::time::Instant::now());
     match llm.chat_stream(&messages, Some(decide::tool_definitions())) {
         Ok(rx) => {
             let bt_tx2 = bt_tx.clone();
@@ -91,6 +92,7 @@ pub(super) fn abort_current_llm(
         state.push_chat(crate::app::MsgRole::Thinking, t);
     }
     state.streaming_text.clear();
+    state.stream_started = None;
     full_text.clear();
 }
 

@@ -49,12 +49,18 @@ pub struct AppState {
     pub lookup_rounds: u32,
     /// 自主模式中连续无 ACTION 的轮数（达到 3 视为 LLM 放弃，退出自主）。
     pub no_action_streak: u32,
+    /// 自主模式中连续 Unknown 状态次数（游戏加载中，达到 5 暂停自主）。
+    pub unknown_streak: u32,
     /// 最近一次 LLM 调用的用量（供 session 记录）。
     pub last_usage: sts2_llm::Usage,
     /// 本轮决策对应的用户输入（StreamDone 时写入 TurnRecord）。
     pub pending_user_input: Option<String>,
     /// 待用户确认的自主模式请求（task 文本）。Some = 等待 y/n。
     pub pending_auto_start: Option<String>,
+    /// 流式期间用户提前作出的 y/n 答复（auto_start 到达时自动消费）。
+    pub queued_auto_reply: Option<bool>,
+    /// 当前 LLM 流开始时刻（用于顶栏显示等待秒数）。
+    pub stream_started: Option<std::time::Instant>,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
     pub last_state_json: String,
     /// LLM 正在分析的状态 JSON（决策开始时的快照）。
@@ -102,9 +108,12 @@ impl AppState {
             lookup_context: String::new(),
             lookup_rounds: 0,
             no_action_streak: 0,
+            unknown_streak: 0,
             last_usage: sts2_llm::Usage::default(),
             pending_user_input: None,
             pending_auto_start: None,
+            queued_auto_reply: None,
+            stream_started: None,
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),

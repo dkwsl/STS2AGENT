@@ -101,6 +101,7 @@ pub(super) async fn handle_backend_msg(
             state.streaming_text.clear();
             *mode = Mode::Idle;
             state.progress = None;
+            state.stream_started = None;
             full_text.clear();
         }
         Backend::ExecDone { success, message } => {
@@ -148,6 +149,7 @@ pub(super) fn resolve_auto_start(
     if confirm {
         state.auto_mode = true;
         state.no_action_streak = 0;
+        state.unknown_streak = 0;
         state.task = if task.is_empty() { None } else { Some(task) };
         state.push_chat(MsgRole::System, "🤖 自主模式开启。".into());
         *mode = Mode::FetchingState;
@@ -319,6 +321,15 @@ async fn on_stream_done(
                 // 已处于自主模式：重复请求直接忽略
                 full_text.clear();
                 pending_actions.clear();
+                return;
+            }
+            // 用户可能在流式期间已提前答复（y/n）——直接应用，不再询问
+            if let Some(confirm) = state.queued_auto_reply.take() {
+                state.push_chat(
+                    MsgRole::System,
+                    format!("应用已记录的答复：{}", if confirm { "y" } else { "n" }),
+                );
+                resolve_auto_start(confirm, state, mode, full_text, mcp, bt_tx);
                 return;
             }
             // 请求用户确认：内核不自行开启自主模式
@@ -599,16 +610,42 @@ async fn on_state_ready(
 
     if gs.state_type == StateType::GameOver {
         state.finished = true;
+        if state.auto_mode {
+            state.auto_mode = false;
+            state.task = None;
+            state.push_chat(MsgRole::System, "游戏结束，自主模式结束。".into());
+        }
         state.progress = Some("游戏结束".into());
         *mode = Mode::Idle;
         return;
     }
     if gs.state_type == StateType::Unknown {
-        // 加载中等，不分析，等下次状态变化再触发
+        // 加载中等：不分析。自主模式下重试稳定检测（游戏加载/过场通常几秒内完成），
+        // 连续多次仍 Unknown 则静默终止自主循环（无轮询，等用户输入恢复）。
+        if state.auto_mode {
+            state.unknown_streak += 1;
+            if state.unknown_streak >= 5 {
+                state.auto_mode = false;
+                state.task = None;
+                state.unknown_streak = 0;
+                state.push_chat(
+                    MsgRole::System,
+                    "自主模式暂停：游戏长时间未加载完成。输入任意消息恢复。".into(),
+                );
+                *mode = Mode::Idle;
+                state.progress = Some("等待游戏加载…".into());
+                return;
+            }
+            *mode = Mode::FetchingState;
+            state.progress = Some(format!("等待游戏加载（重试 {}/5）…", state.unknown_streak));
+            spawn_state_stabilize(mcp, bt_tx);
+            return;
+        }
         *mode = Mode::Idle;
         state.progress = Some("等待游戏加载…".into());
         return;
     }
+    state.unknown_streak = 0;
 
     // 只有自主模式才继续自动分析（执行完一步后取新状态继续）
     if !state.auto_mode {

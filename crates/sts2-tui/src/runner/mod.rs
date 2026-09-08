@@ -161,6 +161,34 @@ pub async fn run(
                             if text.is_empty() {
                                 continue;
                             }
+                            // 流式期间提前答复：LLM 可能正要输出 auto_start，
+                            // 此时 y/n 不打断流，缓存起来等请求到达时自动消费
+                            if matches!(mode, Mode::Streaming) && state.pending_auto_start.is_none()
+                            {
+                                let lower = text.trim().to_lowercase();
+                                let yn = if matches!(
+                                    lower.as_str(),
+                                    "y" | "yes" | "好" | "同意" | "可以" | "确定"
+                                ) {
+                                    Some(true)
+                                } else if matches!(
+                                    lower.as_str(),
+                                    "n" | "no" | "不" | "不要" | "拒绝" | "取消" | "不行"
+                                ) {
+                                    Some(false)
+                                } else {
+                                    None
+                                };
+                                if let Some(v) = yn {
+                                    state.queued_auto_reply = Some(v);
+                                    state.push_chat(MsgRole::User, text.clone());
+                                    state.push_chat(
+                                        MsgRole::System,
+                                        "已记录答复，待 Agent 发起自主模式请求时自动应用。".into(),
+                                    );
+                                    continue;
+                                }
+                            }
                             // 自主模式开启请求待确认：y/n 直接判定，其他文字取消询问转普通对话
                             if state.pending_auto_start.is_some() {
                                 let lower = text.trim().to_lowercase();
