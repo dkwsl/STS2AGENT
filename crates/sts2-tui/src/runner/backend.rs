@@ -227,16 +227,16 @@ async fn on_stream_done(
         .join("\n")
         .trim()
         .to_string();
+    // 固化本轮思考过程（时间顺序：思考先生成，排在分析之前）
+    if !state.reasoning_text.is_empty() {
+        let t = std::mem::take(&mut state.reasoning_text);
+        state.push_chat(MsgRole::Thinking, t);
+    }
     if !chat_text.is_empty() {
         state.push_chat(MsgRole::Agent, chat_text.clone());
         history.push(decide::ChatTurn::Assistant(chat_text.clone()));
     }
     state.streaming_text.clear();
-    // 固化本轮思考过程为浅色历史消息（不丢弃；不进 LLM 对话历史）
-    if !state.reasoning_text.is_empty() {
-        let t = std::mem::take(&mut state.reasoning_text);
-        state.push_chat(MsgRole::Thinking, t);
-    }
 
     // 记录本轮到 session（R5：TUI 会话也保存对话/动作/用量；result 由 ExecDone 回填）
     session.turns.push(sts2_agent::storage::TurnRecord {
