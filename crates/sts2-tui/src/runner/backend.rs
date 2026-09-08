@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, Mutex};
+use tokio_util::sync::CancellationToken;
 
 use sts2_agent::storage::{Session, SessionStore};
 use sts2_agent::{decide, parse};
@@ -14,7 +15,7 @@ use crate::app::{AppState, Mode, MsgRole};
 
 use super::actions::{handle_lookup, spawn_exec, try_reflex_action};
 use super::intent::{handle_user_intent, UserIntent};
-use super::stream::start_decision;
+use super::stream;
 use super::Backend;
 
 /// 处理一条后台消息。返回 true = 应退出程序。
@@ -169,6 +170,38 @@ pub(super) fn resolve_auto_start(
     }
 }
 
+/// 自主链式续发：不重建 prompt，直接把当前 auto_messages 链再发一轮。
+/// 用于 tool 结果回填后 / nudge 后的增量决策。
+pub(super) fn continue_auto_stream(
+    state: &mut AppState,
+    config: &Config,
+    bt_tx: &mpsc::UnboundedSender<Backend>,
+) {
+    // 链截断保护：超过 60 条消息时丢弃最旧的中段（保留最近 40 条）
+    if state.auto_messages.len() > 60 {
+        let keep_from = state.auto_messages.len() - 40;
+        state.auto_messages.drain(..keep_from);
+    }
+    let cancel = CancellationToken::new();
+    state.current_cancel = cancel.clone();
+    let llm2 = LlmClient::from_config(&config.model);
+    state.stream_started = Some(std::time::Instant::now());
+    match llm2.chat_stream(
+        &state.auto_messages.clone(),
+        Some(decide::tool_definitions()),
+    ) {
+        Ok(rx) => {
+            let bt_tx2 = bt_tx.clone();
+            tokio::spawn(async move {
+                stream::consume_stream(rx, bt_tx2, cancel).await;
+            });
+        }
+        Err(e) => {
+            state.push_chat(MsgRole::System, format!("LLM 启动失败: {e:#}"));
+        }
+    }
+}
+
 /// LLM 流结束：校验状态一致性 → 处理输出（NOTE/对话文本）→ 拦截 lookup / 执行 ACTION。
 #[allow(clippy::too_many_arguments)]
 async fn on_stream_done(
@@ -247,6 +280,20 @@ async fn on_stream_done(
     }
     state.streaming_text.clear();
 
+    // 自主模式：本轮 assistant 输出（文本 + tool_calls）压入 agentic 消息链
+    if state.auto_mode {
+        let calls: Vec<(String, String, String)> = tool_calls
+            .iter()
+            .map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone()))
+            .collect();
+        state
+            .auto_messages
+            .push(sts2_llm::ChatMessage::assistant_tool_calls(
+                chat_text.clone(),
+                &calls,
+            ));
+    }
+
     // 记录本轮到 session（R5：TUI 会话也保存对话/动作/用量；result 由 ExecDone 回填）
     session.turns.push(sts2_agent::storage::TurnRecord {
         turn: session.turns.len() as u32 + 1,
@@ -278,10 +325,28 @@ async fn on_stream_done(
             let ok = handle_lookup(&query, state, config, mcp).await;
             full_text.clear();
             pending_actions.clear();
+            if state.auto_mode {
+                // 链式：查询结果作为 tool 消息入链直接续发（查询不改游戏状态）
+                let call_id = tool_calls
+                    .first()
+                    .map(|tc| tc.id.clone())
+                    .unwrap_or_else(|| "lookup".into());
+                let content = if ok {
+                    "查询完成，结果已记录在「知识库查询记录」中，请基于该信息继续。".to_string()
+                } else {
+                    "查询失败或已达上限，请基于现有信息继续。".to_string()
+                };
+                state
+                    .auto_messages
+                    .push(sts2_llm::ChatMessage::tool(call_id, content));
+                *mode = Mode::Streaming;
+                state.progress = Some("结合查询结果分析…".into());
+                continue_auto_stream(state, config, bt_tx);
+                return;
+            }
             *mode = Mode::Streaming;
             state.progress = Some("结合查询结果分析…".into());
-            // lookup 不依赖具体状态：重取最新状态决策，
-            // 避免 StreamDone 状态校验因快照过期而丢弃本轮输出
+            // 非自主：重取最新状态重新决策（避免快照过期被状态校验丢弃）
             let sj = match mcp.lock().await.get_game_state("json").await {
                 Ok(s) if !s.is_empty() => s,
                 _ => state.decision_state_json.clone(),
@@ -289,11 +354,7 @@ async fn on_stream_done(
             let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
             state.game_state = gs.clone();
             state.last_state_json = sj.clone();
-            // 自主模式走自主 prompt（查询记录在上下文中）；非自主带恢复指令
-            // （否则 user_msg=None + 非 auto_mode 会走"只给文字建议"分支丢任务）
-            let resume_msg = if state.auto_mode {
-                None
-            } else if ok {
+            let resume_msg = if ok {
                 Some("（系统）查询完成，结果已附在下方「知识库查询记录」中。请基于查询结果继续完成我之前的指令。".to_string())
             } else {
                 Some(
@@ -301,7 +362,7 @@ async fn on_stream_done(
                         .to_string(),
                 )
             };
-            start_decision(
+            stream::start_decision(
                 &gs,
                 &sj,
                 config,
@@ -359,6 +420,7 @@ async fn on_stream_done(
             if state.auto_mode {
                 state.auto_mode = false;
                 state.task = None;
+                state.auto_messages.clear();
                 state.push_chat(MsgRole::System, "🤖 自主模式结束。".into());
             }
             pending_actions.clear();
@@ -393,6 +455,15 @@ async fn on_stream_done(
         if state.recent_actions.len() > 5 {
             state.recent_actions.remove(0);
         }
+        // 首个动作的 tool_call_id 暂存（ExecDone 结果回填链用）
+        state.last_exec = Some((
+            tool_calls
+                .first()
+                .map(|tc| tc.id.clone())
+                .unwrap_or_default(),
+            true,
+            String::new(),
+        ));
         *pending_actions = actions;
         *mode = Mode::Executing;
         state.progress = Some(format!("执行 {}…", action.tool));
@@ -411,24 +482,13 @@ async fn on_stream_done(
                 *mode = Mode::Idle;
                 state.progress = None;
             } else {
-                let nudge = "（系统）自主模式仍在进行。请直接给出下一步游戏操作 ACTION；仅当任务已全部完成时才输出 ACTION: auto_stop。".to_string();
-                let gs = state.game_state.clone();
-                let sj = state.last_state_json.clone();
+                let nudge = "（系统）自主模式仍在进行。请直接给出下一步游戏操作工具调用；仅当任务已全部完成时才调用 auto_stop。";
+                state.auto_messages.push(sts2_llm::ChatMessage::user(nudge));
                 full_text.clear();
                 pending_actions.clear();
                 *mode = Mode::Streaming;
                 state.progress = Some("继续分析…".into());
-                start_decision(
-                    &gs,
-                    &sj,
-                    config,
-                    llm,
-                    bt_tx,
-                    history,
-                    Some(&nudge),
-                    zh,
-                    state,
-                );
+                continue_auto_stream(state, config, bt_tx);
                 return;
             }
         } else {
@@ -523,6 +583,10 @@ async fn on_exec_done(
 ) {
     state.current_turn += 1;
     state.push_chat(MsgRole::System, format!("执行结果: {message}"));
+    // ExecDone 结果暂存（自主链回填 tool 消息用）
+    if let Some((_, _, msg_slot)) = state.last_exec.as_mut() {
+        *msg_slot = message.clone();
+    }
 
     // 更新 session
     if let Some(t) = session.turns.last_mut() {
@@ -608,8 +672,8 @@ pub(super) fn spawn_state_stabilize(
     });
 }
 
-/// ExecDone 后取到稳定状态：自主模式 → 反射动作或继续 LLM 分析。
-#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
+/// ExecDone 后取到稳定状态：自主模式 → 反射动作或链式续发。
+#[allow(clippy::too_many_arguments, clippy::ptr_arg, unused_variables)]
 async fn on_state_ready(
     state: &mut AppState,
     mode: &mut Mode,
@@ -694,8 +758,28 @@ async fn on_state_ready(
         state.progress = Some(format!("执行 {tool}…"));
         return;
     }
+    // 自主链式：最近执行结果 + 新状态作为 tool 消息回填链，续发增量决策
+    let tool_id = state
+        .last_exec
+        .take()
+        .map(|(id, _, _)| id)
+        .unwrap_or_else(|| "state".into());
+    let exec_msg = state
+        .last_exec
+        .as_ref()
+        .map(|(_, _, m)| m.clone())
+        .unwrap_or_default();
+    let slim = sts2_agent::slim::slim_state_json(&sj);
+    let tool_content = format!("执行结果: {exec_msg}\n执行后的最新游戏状态:\n{slim}");
+    state
+        .auto_messages
+        .push(sts2_llm::ChatMessage::tool(tool_id, tool_content));
+    if state.auto_messages.len() > 60 {
+        let keep_from = state.auto_messages.len() - 40;
+        state.auto_messages.drain(..keep_from);
+    }
     *mode = Mode::Streaming;
     state.progress = Some("分析中…".into());
     full_text.clear();
-    start_decision(&gs, &sj, config, llm, bt_tx, history, None, zh, state);
+    continue_auto_stream(state, config, bt_tx);
 }

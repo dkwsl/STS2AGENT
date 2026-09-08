@@ -63,6 +63,11 @@ pub struct AppState {
     pub stream_started: Option<std::time::Instant>,
     /// 当前策略计划（LLM 经 PLAN: 行声明，跨回合注入 prompt）。
     pub plan: Option<String>,
+    /// 自主回合的消息链（agentic loop：user → assistant(tool_calls) → tool → …）。
+    /// 链上每步操作与结果都在场，LLM 增量决策不重复思考。
+    pub auto_messages: Vec<sts2_llm::ChatMessage>,
+    /// 最近一次动作的执行结果（ExecDone 暂存，StateReady 组装 tool 消息用）。
+    pub last_exec: Option<(String, bool, String)>, // (tool_call_id, success, message)
     /// 最近已执行的游戏操作（跨回合记忆，最多 5 条）。
     pub recent_actions: Vec<String>,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
@@ -119,6 +124,8 @@ impl AppState {
             queued_auto_reply: None,
             stream_started: None,
             plan: None,
+            auto_messages: Vec::new(),
+            last_exec: None,
             recent_actions: Vec::new(),
             last_state_json: String::new(),
             decision_state_json: String::new(),

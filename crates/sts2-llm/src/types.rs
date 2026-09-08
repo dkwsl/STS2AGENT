@@ -1,11 +1,18 @@
 //! LLM 类型：消息、响应、用量、流式事件。
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// assistant 消息携带的工具调用（OpenAI 格式）；其他角色为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Value>,
+    /// role=tool 时对应的 tool_call id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -13,18 +20,52 @@ impl ChatMessage {
         Self {
             role: "system".into(),
             content: content.into(),
+            ..Default::default()
         }
     }
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".into(),
             content: content.into(),
+            ..Default::default()
         }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".into(),
             content: content.into(),
+            ..Default::default()
+        }
+    }
+    /// assistant 消息：文本 + 工具调用（id/name/arguments 三元组列表）。
+    pub fn assistant_tool_calls(
+        content: impl Into<String>,
+        calls: &[(String, String, String)],
+    ) -> Self {
+        let tool_calls: Vec<Value> = calls
+            .iter()
+            .map(|(id, name, args)| {
+                json!({
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": args }
+                })
+            })
+            .collect();
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+            tool_calls: Some(Value::Array(tool_calls)),
+            tool_call_id: None,
+        }
+    }
+    /// 工具结果消息（role=tool，对应一次 tool_call）。
+    pub fn tool(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: Some(call_id.into()),
         }
     }
 }

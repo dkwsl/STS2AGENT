@@ -45,24 +45,51 @@ pub(super) fn start_decision(
     );
     let session_notes = std::fs::read_to_string(&notes_path).ok();
 
-    let messages = decide::build_messages(
-        state_json,
-        &config.model.model,
-        history,
-        &summary,
-        user_msg,
-        state.auto_mode,
-        state.task.as_deref(),
-        if game_knowledge.is_empty() {
-            None
-        } else {
-            Some(&game_knowledge)
-        },
-        session_notes.as_deref(),
-        state.plan.as_deref(),
-        &state.recent_actions,
-        zh,
-    );
+    // 自主模式：agentic 消息链——链上已有内容则直接续发（增量决策，不重复思考）；
+    // 链为空（回合开始）则初始化 [system, user(状态+知识+PLAN)]。
+    let messages: Vec<sts2_llm::ChatMessage> = if state.auto_mode {
+        if state.auto_messages.is_empty() {
+            let init = decide::build_messages(
+                state_json,
+                &config.model.model,
+                history,
+                &summary,
+                user_msg,
+                true,
+                state.task.as_deref(),
+                if game_knowledge.is_empty() {
+                    None
+                } else {
+                    Some(&game_knowledge)
+                },
+                session_notes.as_deref(),
+                state.plan.as_deref(),
+                &state.recent_actions,
+                zh,
+            );
+            state.auto_messages = init;
+        }
+        state.auto_messages.clone()
+    } else {
+        decide::build_messages(
+            state_json,
+            &config.model.model,
+            history,
+            &summary,
+            user_msg,
+            false,
+            state.task.as_deref(),
+            if game_knowledge.is_empty() {
+                None
+            } else {
+                Some(&game_knowledge)
+            },
+            session_notes.as_deref(),
+            state.plan.as_deref(),
+            &state.recent_actions,
+            zh,
+        )
+    };
     state.stream_started = Some(std::time::Instant::now());
     match llm.chat_stream(&messages, Some(decide::tool_definitions())) {
         Ok(rx) => {

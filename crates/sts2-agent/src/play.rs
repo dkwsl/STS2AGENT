@@ -46,6 +46,9 @@ pub async fn run_play(
     // 跨回合策略记忆
     let mut plan: Option<String> = None;
     let mut recent_actions: Vec<String> = Vec::new();
+    // 链式消息链（agentic loop）+ 上轮执行结果
+    let mut chain: Vec<sts2_llm::ChatMessage> = Vec::new();
+    let mut last_result: Option<String> = None;
 
     let mut turn: u32 = 0;
     loop {
@@ -76,32 +79,47 @@ pub async fn run_play(
             break;
         }
 
-        // 3. LLM 决策（game_knowledge + 本次对局的主动查询记录）
-        let mut game_knowledge =
-            crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
-        if !lookup_context.is_empty() {
-            game_knowledge.push_str("\n=== 知识库查询记录 ===\n");
-            game_knowledge.push_str(&lookup_context);
+        // 3. LLM 决策：链式——首轮构建 [system, user]；后续轮把上轮动作结果+
+        //    新状态作为 tool 消息追加，同一链续发（LLM 增量决策不重复思考）
+        if chain.is_empty() {
+            let mut game_knowledge =
+                crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
+            if !lookup_context.is_empty() {
+                game_knowledge.push_str("\n=== 知识库查询记录 ===\n");
+                game_knowledge.push_str(&lookup_context);
+            }
+            chain = build_messages(
+                &state_json,
+                &config.model.model,
+                &[],
+                &summary,
+                None,
+                true,
+                None,
+                if game_knowledge.is_empty() {
+                    None
+                } else {
+                    Some(&game_knowledge)
+                },
+                None,
+                plan.as_deref(),
+                &recent_actions,
+                zh,
+            );
+        } else {
+            // 回填上轮动作结果 + 新状态（slim 省 token）
+            let content = format!(
+                "上一操作执行结果: {}\n执行后的最新游戏状态:\n{}",
+                last_result.as_deref().unwrap_or("ok"),
+                crate::slim::slim_state_json(&state_json)
+            );
+            chain.push(sts2_llm::ChatMessage::tool("loop", content));
+            if chain.len() > 60 {
+                let keep_from = chain.len() - 40;
+                chain.drain(..keep_from);
+            }
         }
-        let messages = build_messages(
-            &state_json,
-            &config.model.model,
-            &[],
-            &summary,
-            None,
-            true,
-            None,
-            if game_knowledge.is_empty() {
-                None
-            } else {
-                Some(&game_knowledge)
-            },
-            None,
-            plan.as_deref(),
-            &recent_actions,
-            zh,
-        );
-        let mut rx = llm.chat_stream(&messages, Some(crate::decide::tool_definitions()))?;
+        let mut rx = llm.chat_stream(&chain, Some(crate::decide::tool_definitions()))?;
         let mut full_text = String::new();
         let mut turn_usage = Usage::default();
         let mut tool_calls: Vec<sts2_llm::ToolCall> = Vec::new();
@@ -231,6 +249,7 @@ pub async fn run_play(
             Err(e) => (false, format!("{e:#}")),
         };
         println!("[结果] {result_msg}");
+        last_result = Some(result_msg.clone());
 
         // 6. 存盘
         let agent_text = full_text
