@@ -6,7 +6,7 @@ Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/Gennadiyev/STS2MCP/
 
 ## 功能
 
-- **实时回合决策建议**：分析手牌、敌人意图、能量，给出最优行动方案及理由
+- **实时回合决策建议**：分析手牌、敌人意图、能量，给出行动方案及理由
 - **自然语言对话**：与 Agent 自由交流策略——问"为什么不打这张牌""换个方案"等
 - **自主模式**：说"自己打"让 Agent 连续自动操作，随时可打断；开启需在 UI 确认（y/n），右上角显示自主模式标志；游戏加载中自动重试、GameOver 正确收尾
 - **原生工具调用**：LLM 经 OpenAI 兼容 `tool_calls` 结构化通道发起操作，与显示文本分离；供应商不支持时自动回退文本 ACTION 行
@@ -173,7 +173,30 @@ command = "python"
 args = ["-X", "utf8", "C:\\path\\to\\STS2MCP\\mcp\\server.py"]
 ```
 
-> `-X utf8` 规避 Windows Python 默认 GBK 编码问题。Agent 与游戏分属 WSL/Windows 两端时，参考仓库根目录的 `win_server.py` 桥接方案。
+> `-X utf8` 规避 Windows Python 默认 GBK 编码问题。
+
+### WSL + Windows 混合运行（Agent 在 WSL，游戏在 Windows）
+
+游戏跑在 Windows、Agent 跑在 WSL 时，WSL 侧无法直连游戏的 `localhost:15526`（Mod 的 HTTP server 只绑定 Windows 的 localhost）。解法：**让 Python MCP server 跑在 Windows 端**，Agent 通过 `powershell.exe` 桥接它的 stdio。
+
+1. **准备包装脚本**：仓库根目录的 `win_server.py` 就是这个包装器——把它放到 WSL 可访问的位置（本仓库根目录即可）。它的作用：用 Windows Python 以 UTF-8 编码读取并执行 WSL 路径下的 `server.py`（进程实际跑在 Windows 端，其 `localhost` 就是游戏所在端）。
+
+2. **配置 `config/config.toml`**：
+
+```toml
+[mcp]
+command = "powershell.exe"
+args = ["-c", "python '\\\\wsl.localhost\\Ubuntu-24.04\\home\\<user>\\sts2agent\\win_server.py'"]
+```
+
+   路径说明：`\\wsl.localhost\<发行版>\...` 是 Windows 访问 WSL 文件的 UNC 路径（注意 TOML 里反斜杠要双写转义）；`<user>` 换成你的 WSL 用户名。**前提**：Windows 已安装 Python，且 `powershell.exe` 在 WSL 的 PATH 中可用（WSL 默认自带 Windows 互操作）。
+
+3. **链路**：Agent（WSL）→ stdio → powershell.exe → Windows Python（执行 win_server.py → 加载 server.py）→ `localhost:15526` → 游戏 Mod。
+
+**常见坑**：
+- 连接挂起/返回 `Error:`：先确认游戏开着、Mod 已启用（游戏日志应出现 `[STS2 MCP] server started`）；
+- 检查有没有残留的端口转发劫持 15526：`netsh interface portproxy show v4tov4`（有就 `delete` 掉）；
+- Mod 在 shop 状态读取时会自动打开商店界面，属上游行为，本 Agent 已通过"无后台轮询"规避。
 
 ### 切换 LLM 供应商
 
