@@ -101,15 +101,6 @@ impl Usage {
     }
 }
 
-/// 非流式 chat 响应。
-#[derive(Debug, Clone)]
-pub struct ChatResponse {
-    pub content: String,
-    /// 思考模式输出（DeepSeek reasoning_content / OpenAI reasoning）。
-    pub reasoning: Option<String>,
-    pub usage: Usage,
-}
-
 /// 流式 chat 推送的事件。
 #[derive(Debug, Clone)]
 pub enum StreamEvent {

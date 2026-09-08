@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 一次完整会话。
@@ -125,21 +125,6 @@ impl SessionStore {
         metas.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(metas)
     }
-
-    /// 列出会话文件路径（用于 --list 输出）。
-    pub fn list_paths(&self) -> Result<Vec<PathBuf>> {
-        self.ensure_dir()?;
-        let mut paths = Vec::new();
-        for entry in std::fs::read_dir(&self.dir).context("read sessions dir")? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                paths.push(path);
-            }
-        }
-        paths.sort();
-        Ok(paths)
-    }
 }
 
 /// 会话摘要（列表用）。
@@ -151,11 +136,6 @@ pub struct SessionMeta {
     pub turn_count: u32,
     pub total_cost: f64,
     pub finished: bool,
-}
-
-/// 辅助：检查路径存在。
-pub fn dir_exists(dir: &str) -> bool {
-    Path::new(dir).exists()
 }
 
 #[cfg(test)]

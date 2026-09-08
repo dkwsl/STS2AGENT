@@ -13,6 +13,8 @@ pub mod play;
 pub mod slim;
 pub mod storage;
 
+pub use decide::state_summary;
+
 use sts2_core::Config;
 
 /// 加载配置：`config.toml` + `.env`（密钥优先环境变量）。

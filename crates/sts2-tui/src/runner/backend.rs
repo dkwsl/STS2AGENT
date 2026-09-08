@@ -281,7 +281,7 @@ async fn on_stream_done(
     }
     let chat_text: String = full_text
         .lines()
-        .filter(|l| !parse::is_action_line(l) && !parse::is_note_line(l))
+        .filter(|l| !parse::is_action_line(l) && !parse::is_note_line(l) && !parse::is_plan_line(l))
         .collect::<Vec<_>>()
         .join("\n")
         .trim()

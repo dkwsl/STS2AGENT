@@ -127,7 +127,6 @@ pub(super) async fn handle_user_intent(
         }
         UserIntent::Reject => {
             history.push(decide::ChatTurn::User(text.to_string()));
-            state.pending_action = None;
             state.task = None;
             state.progress = Some("重新决策中…".into());
             if refresh_and_decide(

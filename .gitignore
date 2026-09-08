@@ -22,3 +22,5 @@ config/local.toml
 .DS_Store
 data/logs/
 **/data/logs/
+
+win_server.py

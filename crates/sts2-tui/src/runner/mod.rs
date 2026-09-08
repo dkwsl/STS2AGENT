@@ -68,7 +68,6 @@ pub async fn run(
     use_mock: bool,
     show_thinking: bool,
     zh: bool,
-    _auto_play: bool,
     max_turns: u32,
     resume_id: Option<String>,
 ) -> Result<()> {
@@ -77,7 +76,7 @@ pub async fn run(
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = AppState::new(zh);
+    let mut state = AppState::new();
     state.show_thinking = show_thinking;
 
     let (command, args) = if use_mock {

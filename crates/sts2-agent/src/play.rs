@@ -34,7 +34,6 @@ pub async fn run_play(
 
     let llm = LlmClient::from_config(&config.model);
     let mut budget = BudgetGuard::new(config.budget.token_limit, config.budget.cost_limit_usd);
-    let _ = zh;
 
     // 会话存储
     let store = SessionStore::from_dir(&config.storage.sessions_dir);
@@ -293,28 +292,5 @@ pub async fn run_play(
 }
 
 fn state_summary(gs: &GameState) -> String {
-    match gs.state_type {
-        StateType::Map => "地图".into(),
-        StateType::Monster | StateType::Elite | StateType::Boss => {
-            let battle = gs.battle.as_ref();
-            let p = gs.player.as_ref();
-            match (battle, p) {
-                (Some(b), Some(p)) => format!(
-                    "战斗 R{} | {}/{} HP, {} 能量 | 敌人: {}",
-                    b.round.unwrap_or(0),
-                    p.hp,
-                    p.max_hp,
-                    p.energy.unwrap_or(0),
-                    b.enemies.first().map(|e| e.name.as_str()).unwrap_or("?")
-                ),
-                _ => "战斗".into(),
-            }
-        }
-        StateType::Rewards => "奖励".into(),
-        StateType::RestSite => "休息点".into(),
-        StateType::Shop | StateType::FakeMerchant => "商店".into(),
-        StateType::Event => "事件".into(),
-        StateType::Treasure => "宝箱".into(),
-        _ => format!("{:?}", gs.state_type),
-    }
+    crate::decide::state_summary(gs)
 }

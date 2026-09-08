@@ -11,4 +11,4 @@ pub mod types;
 
 pub use budget::BudgetGuard;
 pub use client::LlmClient;
-pub use types::{ChatMessage, ChatResponse, StreamEvent, ToolCall, Usage};
+pub use types::{ChatMessage, StreamEvent, ToolCall, Usage};

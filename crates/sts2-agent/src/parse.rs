@@ -65,7 +65,8 @@ pub fn is_plan_line(line: &str) -> bool {
     line.trim_start().to_uppercase().starts_with("PLAN:")
 }
 
-/// 从 LLM 完整输出中提取并解析**所有** ACTION 行（支持多步操作）。
+/// 从 LLM 完整输出中提取**第一个** ACTION 行并解析为 ParsedAction。
+/// 多步操作由调用方逐行收集（见 TUI backend.rs / play.rs 的动作循环）。
 pub fn parse_action(text: &str) -> Result<ParsedAction> {
     let action_line = text
         .lines()

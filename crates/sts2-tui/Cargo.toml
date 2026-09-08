@@ -15,7 +15,7 @@ sts2-core = { workspace = true }
 sts2-llm = { workspace = true }
 sts2-mcp = { workspace = true }
 tokio = { workspace = true }
-tokio-util = "0.7"
+tokio-util = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 anyhow = { workspace = true }

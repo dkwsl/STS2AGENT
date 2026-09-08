@@ -33,15 +33,6 @@ pub async fn run_decide(
 
     eprintln!("[2/3] 获取游戏状态...");
     let state_json = mcp.get_game_state("json").await?;
-    eprintln!("[诊断] get_game_state 返回 {} 字节", state_json.len());
-    if state_json.len() < 800 {
-        eprintln!("[诊断] 完整内容:\n{state_json}");
-    } else {
-        eprintln!(
-            "[诊断] 前 800 字符:\n{}",
-            state_json.chars().take(800).collect::<String>()
-        );
-    }
     let gs: GameState = serde_json::from_str(&state_json).unwrap_or_default();
     mcp.shutdown().await.ok();
 
@@ -268,6 +259,37 @@ pub fn build_messages(
 pub enum ChatTurn {
     User(String),
     Assistant(String),
+}
+
+/// 状态摘要（一行，用于 prompt 与 TUI 顶栏）。
+pub fn state_summary(gs: &sts2_core::GameState) -> String {
+    use sts2_core::StateType;
+    match gs.state_type {
+        StateType::Map => "地图".into(),
+        StateType::Monster | StateType::Elite | StateType::Boss => {
+            let b = gs.battle.as_ref();
+            let p = gs.player.as_ref();
+            match (b, p) {
+                (Some(b), Some(p)) => format!(
+                    "战斗 R{} | {}/{} HP {} 能量 | {}",
+                    b.round.unwrap_or(0),
+                    p.hp,
+                    p.max_hp,
+                    p.energy.unwrap_or(0),
+                    b.enemies.first().map(|e| e.name.as_str()).unwrap_or("?")
+                ),
+                _ => "战斗".into(),
+            }
+        }
+        StateType::Rewards => "奖励".into(),
+        StateType::CardReward => "选牌".into(),
+        StateType::CardSelect => "卡牌选择".into(),
+        StateType::RestSite => "休息点".into(),
+        StateType::Shop | StateType::FakeMerchant => "商店".into(),
+        StateType::Event => "事件".into(),
+        StateType::Treasure => "宝箱".into(),
+        _ => format!("{:?}", gs.state_type),
+    }
 }
 
 /// 工具定义（OpenAI 兼容 tools 数组）：游戏操作 + 本地请求（lookup/auto）。

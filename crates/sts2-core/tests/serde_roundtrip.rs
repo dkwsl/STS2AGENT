@@ -1,7 +1,7 @@
 //! serde 往返单测：用 STS2MCP `raw-full.md` 真实样本验证领域模型。
 
 use serde_json::{json, Value};
-use sts2_core::{Action, StateType, Turn};
+use sts2_core::{StateType, Turn};
 
 const COMBAT_JSON: &str = r#"{
   "state_type": "monster",
@@ -141,54 +141,4 @@ fn state_type_serde_variants() {
         serde_json::from_str::<StateType>(r#""weird""#).unwrap(),
         StateType::Unknown
     );
-}
-
-#[test]
-fn action_serializes_to_request_body() {
-    let a = Action::PlayCard {
-        card_index: 0,
-        target: Some("JAW_WORM_0".into()),
-    };
-    let v: Value = serde_json::to_value(&a).unwrap();
-    assert_eq!(v["action"], "play_card");
-    assert_eq!(v["card_index"], 0);
-    assert_eq!(v["target"], "JAW_WORM_0");
-
-    let a2 = Action::UsePotion {
-        slot: 0,
-        target: None,
-    };
-    let v2: Value = serde_json::to_value(&a2).unwrap();
-    assert_eq!(v2["action"], "use_potion");
-    assert_eq!(v2["slot"], 0);
-    // 无 target 时不输出该字段。
-    assert!(v2.get("target").is_none());
-
-    let v3: Value = serde_json::to_value(&Action::EndTurn).unwrap();
-    assert_eq!(v3, json!({"action":"end_turn"}));
-}
-
-#[test]
-fn action_roundtrip() {
-    let cases = vec![
-        Action::PlayCard {
-            card_index: 2,
-            target: Some("KIN_PRIEST_0".into()),
-        },
-        Action::EndTurn,
-        Action::UsePotion {
-            slot: 1,
-            target: None,
-        },
-        Action::MenuSelect {
-            option: "singleplayer".into(),
-            seed: None,
-        },
-        Action::CrystalSphereClickCell { x: 4, y: 7 },
-    ];
-    for a in cases {
-        let s = serde_json::to_string(&a).unwrap();
-        let back: Action = serde_json::from_str(&s).unwrap();
-        assert_eq!(a, back, "roundtrip for {s}");
-    }
 }

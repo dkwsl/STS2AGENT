@@ -124,15 +124,6 @@ fn draw_chat_panel(f: &mut Frame, state: &AppState, area: Rect) {
         }
     }
 
-    // Pending
-    if let Some(action) = &state.pending_action {
-        lines.push(Line::from(Span::raw("")));
-        lines.push(Line::from(Span::raw(format!("⏳ 待确认: {action}"))));
-        lines.push(Line::from(Span::raw(
-            "  输入「执行」确认 / 输入其他文字与 Agent 沟通".to_string(),
-        )));
-    }
-
     // 手动换行（保持每行样式；行数准确使 scroll offset 精确）
     let visible = area.height.saturating_sub(2) as usize;
     let max_width = area.width.saturating_sub(2) as usize;

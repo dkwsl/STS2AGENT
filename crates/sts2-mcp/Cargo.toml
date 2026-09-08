@@ -6,10 +6,8 @@ license.workspace = true
 
 [dependencies]
 tokio = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-tracing = { workspace = true }
 
 [[bin]]
 name = "sts2-mcp-mock"
@@ -17,5 +15,3 @@ path = "src/bin/sts2-mcp-mock.rs"
 
 [dev-dependencies]
 sts2-core = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }

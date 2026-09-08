@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/sts2-core",
     "crates/sts2-mcp",
-    "crates/sts2-decision",
     "crates/sts2-llm",
     "crates/sts2-agent",
     "crates/sts2-knowledge",
@@ -36,7 +35,6 @@ futures-util = "0.3"
 # 内部 crate
 sts2-core = { path = "crates/sts2-core" }
 sts2-mcp = { path = "crates/sts2-mcp" }
-sts2-decision = { path = "crates/sts2-decision" }
 sts2-llm = { path = "crates/sts2-llm" }
 sts2-agent = { path = "crates/sts2-agent" }
 sts2-knowledge = { path = "crates/sts2-knowledge" }

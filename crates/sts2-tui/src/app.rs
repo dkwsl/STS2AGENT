@@ -2,7 +2,7 @@
 
 use tokio_util::sync::CancellationToken;
 
-use sts2_core::{GameState, StateType};
+use sts2_core::GameState;
 
 /// 对话消息。
 #[derive(Debug, Clone)]
@@ -32,8 +32,6 @@ pub struct AppState {
     pub total_cost: f64,
     pub progress: Option<String>,
     pub show_thinking: bool,
-    #[allow(dead_code)]
-    pub zh: bool,
     pub finished: bool,
     /// 自主模式：用户明确说了"自己打"，Agent 连续操作直到完成或用户喊停。
     pub auto_mode: bool,
@@ -77,7 +75,6 @@ pub struct AppState {
     pub decision_state_json: String,
     /// 上次状态轮询时间（Instant 的简单替代：SystemTime）。
     pub last_poll: std::time::Instant,
-    pub pending_action: Option<String>,
     pub input: String,
     pub cursor: usize,
     /// 对话面板滚动偏移（0=最底部，递增=向上滚）。
@@ -91,12 +88,11 @@ pub enum Mode {
     FetchingState,
     Streaming,
     Executing,
-    #[allow(dead_code)]
     PendingConfirm,
 }
 
 impl AppState {
-    pub fn new(zh: bool) -> Self {
+    pub fn new() -> Self {
         Self {
             game_state: GameState::default(),
             chat: Vec::new(),
@@ -108,7 +104,6 @@ impl AppState {
             total_cost: 0.0,
             progress: None,
             show_thinking: false,
-            zh,
             finished: false,
             auto_mode: false,
             task: None,
@@ -130,16 +125,10 @@ impl AppState {
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),
-            pending_action: None,
             input: String::new(),
             cursor: 0,
             chat_scroll: 0,
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn toggle_thinking(&mut self) {
-        self.show_thinking = !self.show_thinking;
     }
 
     pub fn status_color(&self) -> ratatui::style::Color {
@@ -323,30 +312,5 @@ pub fn state_lines(gs: &GameState) -> Vec<String> {
 }
 
 pub fn state_summary(gs: &GameState) -> String {
-    match gs.state_type {
-        StateType::Map => "地图".into(),
-        StateType::Monster | StateType::Elite | StateType::Boss => {
-            let b = gs.battle.as_ref();
-            let p = gs.player.as_ref();
-            match (b, p) {
-                (Some(b), Some(p)) => format!(
-                    "战斗 R{} | {}/{} HP {} 能量 | {}",
-                    b.round.unwrap_or(0),
-                    p.hp,
-                    p.max_hp,
-                    p.energy.unwrap_or(0),
-                    b.enemies.first().map(|e| e.name.as_str()).unwrap_or("?")
-                ),
-                _ => "战斗".into(),
-            }
-        }
-        StateType::Rewards => "奖励".into(),
-        StateType::CardReward => "选牌".into(),
-        StateType::CardSelect => "卡牌选择".into(),
-        StateType::RestSite => "休息点".into(),
-        StateType::Shop | StateType::FakeMerchant => "商店".into(),
-        StateType::Event => "事件".into(),
-        StateType::Treasure => "宝箱".into(),
-        _ => format!("{:?}", gs.state_type),
-    }
+    sts2_agent::state_summary(gs)
 }
