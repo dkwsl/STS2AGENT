@@ -75,7 +75,7 @@ pub async fn run_play(
 
         // 3. LLM 决策（game_knowledge + 本次对局的主动查询记录）
         let mut game_knowledge =
-            crate::context::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
+            crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
         if !lookup_context.is_empty() {
             game_knowledge.push_str("\n=== 知识库查询记录 ===\n");
             game_knowledge.push_str(&lookup_context);
@@ -163,7 +163,7 @@ pub async fn run_play(
             lookup_rounds += 1;
             println!("[查询知识库] {query}…");
             let (used, result) = {
-                let direct = crate::lookup::lookup_query_smart(
+                let direct = crate::knowledge::lookup_query_smart(
                     &query,
                     &gs,
                     &config.storage.game_knowledge_dir,
@@ -171,7 +171,8 @@ pub async fn run_play(
                 if direct.1.is_empty() {
                     // 本地未命中 → 联网查游戏 Wiki 兜底
                     println!("[查询] 🌐 本地未命中，查询游戏 Wiki…");
-                    let wiki = crate::lookup::search_wiki_via_mcp(&mut mcp, &query).await;
+                    let mut wiki = sts2_knowledge::McpWikiSearcher { client: &mut mcp };
+                    let wiki = sts2_knowledge::search_wiki(&mut wiki, &query).await;
                     if wiki.is_empty() {
                         (query.clone(), String::new())
                     } else {

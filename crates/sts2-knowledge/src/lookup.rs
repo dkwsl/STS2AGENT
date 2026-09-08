@@ -4,7 +4,8 @@
 use std::path::Path;
 
 use sts2_core::GameState;
-use sts2_mcp::McpClient;
+
+use crate::wiki::WikiSearcher;
 
 /// LLM 主动查询：按名称/内部 ID 在所有知识库表格中查找匹配行。
 /// 遍历 8 个表格文件，按第一列匹配（大小写不敏感、忽略分隔符），返回带分类标注的结果。
@@ -70,14 +71,13 @@ pub fn perform_lookup(query: &str, gs: &GameState, knowledge_dir: &str) -> Looku
     LookupOutcome { used, result }
 }
 
-/// 联网兜底：经 MCP 调游戏 Mod 自带的 search_wiki（数据来自游戏本体，覆盖卡牌/遗物，
+/// 联网兜底：经 WikiSearcher 查游戏 Wiki（数据来自游戏本体，覆盖卡牌/遗物，
 /// 含升级变体；仅限当前档案已解锁内容）。返回格式化文本，失败/无结果返回空串。
 /// 结果截断到 1000 字。
-pub async fn search_wiki_via_mcp(mcp: &mut McpClient, query: &str) -> String {
-    let args = serde_json::json!({ "query": query, "item_type": "all", "limit": 3 });
-    let text = match mcp.call_tool("search_wiki", args).await {
+pub async fn search_wiki(wiki: &mut dyn WikiSearcher, query: &str) -> String {
+    let text = match wiki.search_wiki(query).await {
         Ok(t) => t,
-        Err(_) => return String::new(), // mock 模式无此工具，静默降级
+        Err(_) => return String::new(), // 工具缺失/服务不可用，静默降级
     };
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.starts_with("Error") {

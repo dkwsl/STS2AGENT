@@ -100,7 +100,7 @@ pub(super) async fn handle_lookup(
     }
     state.lookup_rounds += 1;
     state.push_chat(MsgRole::System, format!("📖 查询知识库: {query}…"));
-    let outcome = sts2_agent::lookup::perform_lookup(
+    let outcome = sts2_agent::knowledge::perform_lookup(
         query,
         &state.game_state,
         &config.storage.game_knowledge_dir,
@@ -111,7 +111,8 @@ pub(super) async fn handle_lookup(
         state.push_chat(MsgRole::System, "🌐 本地未命中，查询游戏 Wiki…".into());
         let wiki = {
             let mut m = mcp.lock().await;
-            sts2_agent::lookup::search_wiki_via_mcp(&mut m, query).await
+            let mut wiki = sts2_agent::knowledge::McpWikiSearcher { client: &mut m };
+            sts2_agent::knowledge::search_wiki(&mut wiki, query).await
         };
         if wiki.is_empty() {
             (query.to_string(), String::new())

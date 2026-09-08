@@ -18,15 +18,32 @@ pub struct McpClient {
 
 impl McpClient {
     /// 拉起 MCP server 子进程并连接其 stdio。
-    /// server 的 stderr 重定向到 data/logs/mcp.log（便于排查，不搞乱 TUI）。
+    /// server 的 stderr 重定向到 `log_path`（便于排查，不搞乱 TUI）；
+    /// 传 None 则丢弃 stderr。
+    pub fn spawn_with_log(command: &str, args: &[String], log_path: Option<&str>) -> Result<Self> {
+        let stderr = match log_path {
+            Some(p) => {
+                if let Some(parent) = std::path::Path::new(p).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .map(Stdio::from)
+                    .unwrap_or(Stdio::null())
+            }
+            None => Stdio::null(),
+        };
+        Self::spawn_inner(command, args, stderr)
+    }
+
+    /// 便捷：spawn 并把 server stderr 追加到默认日志 data/logs/mcp.log。
     pub fn spawn(command: &str, args: &[String]) -> Result<Self> {
-        let _ = std::fs::create_dir_all("data/logs");
-        let stderr = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("data/logs/mcp.log")
-            .map(Stdio::from)
-            .unwrap_or(Stdio::null());
+        Self::spawn_with_log(command, args, Some("data/logs/mcp.log"))
+    }
+
+    fn spawn_inner(command: &str, args: &[String], stderr: Stdio) -> Result<Self> {
         let mut child = Command::new(command)
             .args(args)
             .stdin(Stdio::piped())

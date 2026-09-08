@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 sts2-core = { workspace = true }
+sts2-knowledge = { workspace = true }
 sts2-mcp = { workspace = true }
 sts2-decision = { workspace = true }
 sts2-llm = { workspace = true }

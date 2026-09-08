@@ -5,9 +5,9 @@
 
 #![forbid(unsafe_code)]
 
-pub mod context;
 pub mod decide;
-pub mod lookup;
+/// 知识库检索（已拆分至 sts2-knowledge，此模块为 re-export 兼容层）
+pub mod knowledge;
 pub mod parse;
 pub mod play;
 pub mod slim;

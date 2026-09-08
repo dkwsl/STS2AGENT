@@ -50,7 +50,7 @@ pub async fn run_decide(
     let mut budget = BudgetGuard::new(config.budget.token_limit, config.budget.cost_limit_usd);
 
     let game_knowledge =
-        crate::context::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
+        crate::knowledge::search_game_knowledge(&gs, &config.storage.game_knowledge_dir);
 
     let messages = build_messages(
         &state_json,

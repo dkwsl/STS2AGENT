@@ -5,7 +5,7 @@ use std::path::Path;
 
 use sts2_core::{GameState, StateType};
 
-use super::lookup::{lookup_in_table, normalize_id, strip_card_suffix};
+use crate::lookup::{lookup_in_table, normalize_id, strip_card_suffix};
 
 /// 从 GameState 的 card_id / enemy_id / potion_id 查 game-knowledge 表格，
 /// 返回匹配行 + playbook 相关段落。总输出截断到 2000 字。

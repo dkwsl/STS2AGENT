@@ -32,7 +32,7 @@ pub(super) fn start_decision(
 
     // game-knowledge 结构化索引检索 + 本次任务的主动查询结果
     let mut game_knowledge =
-        sts2_agent::context::search_game_knowledge(gs, &config.storage.game_knowledge_dir);
+        sts2_agent::knowledge::search_game_knowledge(gs, &config.storage.game_knowledge_dir);
     if !state.lookup_context.is_empty() {
         game_knowledge.push_str("\n=== 知识库查询记录 ===\n");
         game_knowledge.push_str(&state.lookup_context);

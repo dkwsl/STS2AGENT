@@ -1359,6 +1359,7 @@ dependencies = [
  "serde_json",
  "sts2-core",
  "sts2-decision",
+ "sts2-knowledge",
  "sts2-llm",
  "sts2-mcp",
  "thiserror",
@@ -1383,6 +1384,18 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "sts2-core",
+]
+
+[[package]]
+name = "sts2-knowledge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde_json",
+ "sts2-core",
+ "sts2-mcp",
+ "tokio",
 ]
 
 [[package]]
@@ -1422,6 +1435,7 @@ dependencies = [
  "serde_json",
  "sts2-agent",
  "sts2-core",
+ "sts2-knowledge",
  "sts2-llm",
  "sts2-mcp",
  "tokio",
