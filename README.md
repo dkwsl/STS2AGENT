@@ -142,10 +142,10 @@ cargo run -p sts2-tui -- --tui --load <session-id>
 ```toml
 [model]
 endpoint = "https://api.openai.com/v1"  # OpenAI 兼容 API 地址
-api_key = ""                              # 畺空则从 .env 读取
+api_key = ""                              # 留空则从 .env 读取
 model = "gpt-4o-mini"
-context_length = 128000
-thinking_mode = false                     # 是否请求 reasoning_content
+context_length = 128000                   # 预留（当前未参与请求构造）
+thinking_mode = false                     # 预留（思考内容由服务端模型自行决定）
 price_in = 0.15                           # 每百万输入 token 美元
 price_out = 0.60                          # 每百万输出 token 美元
 
@@ -160,7 +160,7 @@ cost_limit_usd = 0.0                      # 0.0 = 不限
 [storage]
 sessions_dir = "data/sessions"
 logs_dir = "data/logs"
-game_knowledge_dir = "game-knowledge"       # 结构化游戏数据索引目录
+game_knowledge_dir = "game-knowledge"     # 结构化游戏数据索引目录
 ```
 
 ### Windows 原生运行
@@ -179,14 +179,14 @@ args = ["-X", "utf8", "C:\\path\\to\\STS2MCP\\mcp\\server.py"]
 
 游戏跑在 Windows、Agent 跑在 WSL 时，WSL 侧无法直连游戏的 `localhost:15526`（Mod 的 HTTP server 只绑定 Windows 的 localhost）。解法：**让 Python MCP server 跑在 Windows 端**，Agent 通过 `powershell.exe` 桥接它的 stdio。
 
-1. **准备包装脚本**：参考仓库根目录的 `win_server.example.py`，在同目录复制一份为 `win_server.py`（此文件含个人路径，已 gitignore 不入库），把其中的 `mcp_dir` 改成你的实际路径。它的作用：用 Windows Python 以 UTF-8 编码读取并执行 WSL 路径下的 `server.py`（进程实际跑在 Windows 端，其 `localhost` 就是游戏所在端）。
+1. **准备包装脚本**：参考仓库根目录的 `win_server.example.py`，在同目录复制一份为 `win_server.py`，把其中的 `mcp_dir` 改成你的实际路径。它的作用：用 Windows Python 以 UTF-8 编码读取并执行 WSL 路径下的 `server.py`（进程实际跑在 Windows 端，其 `localhost` 就是游戏所在端）。
 
 2. **配置 `config/config.toml`**：
 
 ```toml
 [mcp]
 command = "powershell.exe"
-args = ["-c", "python '\\\\wsl.localhost\\Ubuntu-24.04\\home\\<user>\\sts2agent\\win_server.py'"]
+args = ["-c", "python '\\\\wsl.localhost\\<发行版>\\home\\<user>\\sts2agent\\win_server.py'"]
 ```
 
    路径说明：`\\wsl.localhost\<发行版>\...` 是 Windows 访问 WSL 文件的 UNC 路径（注意 TOML 里反斜杠要双写转义）；`<user>` 换成你的 WSL 用户名。**前提**：Windows 已安装 Python，且 `powershell.exe` 在 WSL 的 PATH 中可用（WSL 默认自带 Windows 互操作）。

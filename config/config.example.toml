@@ -16,9 +16,6 @@ command = "uv"
 args = ["run", "--directory", "/home/<你的用户名>/sts2mcp/STS2MCP/mcp", "python", "server.py"]
 # 演示用 Mock（待实现后切换）：command = "sts2-mcp-mock"
 
-[decision]
-engine = "rule_based"  # rule_based(内置)；预留 mcts / remote
-
 [budget]
 token_limit = 0       # 0 = 不限；超出自动中断
 cost_limit_usd = 0.0  # 0.0 = 不限
