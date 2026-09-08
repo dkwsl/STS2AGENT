@@ -61,6 +61,10 @@ pub struct AppState {
     pub queued_auto_reply: Option<bool>,
     /// 当前 LLM 流开始时刻（用于顶栏显示等待秒数）。
     pub stream_started: Option<std::time::Instant>,
+    /// 当前策略计划（LLM 经 PLAN: 行声明，跨回合注入 prompt）。
+    pub plan: Option<String>,
+    /// 最近已执行的游戏操作（跨回合记忆，最多 5 条）。
+    pub recent_actions: Vec<String>,
     /// 上一次已知的状态 JSON（用于检测用户手动操作）。
     pub last_state_json: String,
     /// LLM 正在分析的状态 JSON（决策开始时的快照）。
@@ -114,6 +118,8 @@ impl AppState {
             pending_auto_start: None,
             queued_auto_reply: None,
             stream_started: None,
+            plan: None,
+            recent_actions: Vec::new(),
             last_state_json: String::new(),
             decision_state_json: String::new(),
             last_poll: std::time::Instant::now(),

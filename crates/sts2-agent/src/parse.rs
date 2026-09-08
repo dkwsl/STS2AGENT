@@ -35,6 +35,33 @@ pub fn parse_tool_call(name: &str, arguments: &str) -> Result<ParsedAction> {
     })
 }
 
+/// 从 LLM 完整输出中提取最后一行 PLAN: <策略计划>（跨回合策略记忆）。
+/// 无 PLAN 行返回 None。
+pub fn extract_plan(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .find(|l| l.trim_start().to_uppercase().starts_with("PLAN:"))
+        .and_then(|l| {
+            let rest = l
+                .trim_start()
+                .split_once(':')
+                .map(|x| x.1)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if rest.is_empty() {
+                None
+            } else {
+                Some(rest)
+            }
+        })
+}
+
+/// 判断一行是否是 PLAN 行（用于从对话文本中过滤）。
+pub fn is_plan_line(line: &str) -> bool {
+    line.trim_start().to_uppercase().starts_with("PLAN:")
+}
+
 /// 从 LLM 完整输出中提取并解析**所有** ACTION 行（支持多步操作）。
 pub fn parse_action(text: &str) -> Result<ParsedAction> {
     let action_line = text
@@ -349,6 +376,16 @@ mod tests {
         let text = "只是分析，没有笔记";
         let notes = extract_notes(text);
         assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn extract_plan_takes_last() {
+        let text = "PLAN: 先防御\n分析…\nPLAN: 下回合痛击+打击斩杀";
+        assert_eq!(extract_plan(text).as_deref(), Some("下回合痛击+打击斩杀"));
+        assert!(is_plan_line("plan: x"));
+        assert!(!is_plan_line("这是普通文本"));
+        assert!(extract_plan("没有计划行").is_none());
+        assert!(extract_plan("PLAN:   ").is_none()); // 空计划视为无
     }
 
     #[test]

@@ -155,6 +155,8 @@ pub(super) fn resolve_auto_start(
         state.auto_mode = true;
         state.no_action_streak = 0;
         state.unknown_streak = 0;
+        state.plan = None;
+        state.recent_actions.clear();
         state.task = if task.is_empty() { None } else { Some(task) };
         state.push_chat(MsgRole::System, "🤖 自主模式开启。".into());
         *mode = Mode::FetchingState;
@@ -385,6 +387,12 @@ async fn on_stream_done(
         // 自主模式内：正常动作入队执行（动作有产出即重置无动作计数）
         state.no_action_streak = 0;
         actions.remove(0);
+        state
+            .recent_actions
+            .push(format!("{} {}", action.tool, action.args));
+        if state.recent_actions.len() > 5 {
+            state.recent_actions.remove(0);
+        }
         *pending_actions = actions;
         *mode = Mode::Executing;
         state.progress = Some(format!("执行 {}…", action.tool));
@@ -534,6 +542,12 @@ async fn on_exec_done(
     // 如果还有待执行动作且仍在自主模式，直接执行下一条（已解析，无需再 parse）
     if success && !pending_actions.is_empty() && state.auto_mode {
         let next = pending_actions.remove(0);
+        state
+            .recent_actions
+            .push(format!("{} {}", next.tool, next.args));
+        if state.recent_actions.len() > 5 {
+            state.recent_actions.remove(0);
+        }
         *mode = Mode::Executing;
         state.progress = Some(format!("执行 {}…", next.tool));
         spawn_exec(mcp, bt_tx, &next.tool, next.args);
@@ -620,6 +634,8 @@ async fn on_state_ready(
             state.task = None;
             state.push_chat(MsgRole::System, "游戏结束，自主模式结束。".into());
         }
+        state.plan = None;
+        state.recent_actions.clear();
         state.progress = Some("游戏结束".into());
         *mode = Mode::Idle;
         return;

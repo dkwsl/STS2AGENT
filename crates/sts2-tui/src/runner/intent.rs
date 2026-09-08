@@ -104,6 +104,11 @@ pub(super) async fn handle_user_intent(
     state.queued_auto_reply = None;
     state.pending_user_input = Some(text.to_string());
     pending_actions.clear();
+    if !matches!(intent, UserIntent::Chat(_)) {
+        // 非对话意图（打断/拒绝）：策略记忆随任务重置
+        state.plan = None;
+        state.recent_actions.clear();
+    }
 
     match intent {
         UserIntent::Quit => {}

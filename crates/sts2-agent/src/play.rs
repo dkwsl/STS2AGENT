@@ -43,6 +43,9 @@ pub async fn run_play(
     // 本次对局的知识库主动查询状态
     let mut lookup_context = String::new();
     let mut lookup_rounds: u32 = 0;
+    // 跨回合策略记忆
+    let mut plan: Option<String> = None;
+    let mut recent_actions: Vec<String> = Vec::new();
 
     let mut turn: u32 = 0;
     loop {
@@ -94,6 +97,8 @@ pub async fn run_play(
                 Some(&game_knowledge)
             },
             None,
+            plan.as_deref(),
+            &recent_actions,
             zh,
         );
         let mut rx = llm.chat_stream(&messages, Some(crate::decide::tool_definitions()))?;
@@ -147,6 +152,15 @@ pub async fn run_play(
                 }
             }
         };
+
+        // 4.4 策略记忆：PLAN 更新 + 记录已执行动作
+        if let Some(p) = crate::parse::extract_plan(&full_text) {
+            plan = Some(p);
+        }
+        recent_actions.push(format!("{} {}", action.tool, action.args));
+        if recent_actions.len() > 5 {
+            recent_actions.remove(0);
+        }
 
         // 4.5 知识库查询：拦截，不发给游戏，结果注入下一轮上下文（本地 → Wiki 兜底）
         if action.tool == "lookup" {

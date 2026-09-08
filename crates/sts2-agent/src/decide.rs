@@ -66,6 +66,8 @@ pub async fn run_decide(
             Some(&game_knowledge)
         },
         None,
+        None,
+        &[],
         zh,
     );
     let mut rx = llm.chat_stream(&messages, Some(tool_definitions()))?;
@@ -114,6 +116,8 @@ pub fn build_messages(
     task: Option<&str>,
     game_knowledge: Option<&str>,
     session_notes: Option<&str>,
+    plan: Option<&str>,
+    recent_actions: &[String],
     zh: bool,
 ) -> Vec<ChatMessage> {
     let lang = if zh {
@@ -137,6 +141,10 @@ pub fn build_messages(
 - 出牌前分析手牌、敌人意图、能量。不要空过回合。
 - 考虑斩杀线：能杀则不防御直接输出。但不贪输出：已确定能获胜的战斗，优先用防御/低费牌减少战损（掉血、消耗资源），不追求多余的伤害或最快的击杀。
 - 攻击意图优先防御，Buff/Debuff/Sleep 意图优先输出。
+
+策略记忆——跨回合计划（PLAN）：
+- 需要多步推进时（战斗连招、多回合规划），输出一行 PLAN: <计划>（如"PLAN: 先压血到16，下回合痛击+打击斩杀"）。计划变化时输出新的 PLAN 覆盖，未变化不必重复。
+- 系统会在每轮把你的 PLAN 与最近已执行操作回显给你，作为跨回合记忆；不要重复已执行的操作。
 
 思考纪律——保持推理简短流程化：
 - 思考按固定流程，不超过 6 步：① 当前目标/局面（1 句）→ ② 列 2-3 个候选方案 → ③ 每个方案一句话算清关键数值 → ④ 选定 + 一句理由。
@@ -215,6 +223,20 @@ pub fn build_messages(
         Some(n) if !n.is_empty() => format!("\n\n往期经验:\n{n}"),
         _ => String::new(),
     };
+    let mut plan_part = String::new();
+    if let Some(p) = plan {
+        if !p.is_empty() {
+            plan_part.push_str(&format!(
+                "\n\n当前计划（你此前声明，若已过时请在 PLAN 中更新）: {p}"
+            ));
+        }
+    }
+    if !recent_actions.is_empty() {
+        plan_part.push_str(&format!(
+            "\n\n最近已执行的操作（不要重复执行）: {}",
+            recent_actions.join(" → ")
+        ));
+    }
     let user_content = {
         let state_part = if state_summary.is_empty() {
             format!("当前游戏状态:\n```json\n{state_json}\n```")
@@ -223,11 +245,11 @@ pub fn build_messages(
         };
         match user_msg {
             Some(msg) if !msg.is_empty() => {
-                format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家要操作游戏，通过工具调用发起（自主模式规则见系统提示）。")
+                format!("{state_part}{game_knowledge_part}{notes_part}{plan_part}{task_part}\n\n玩家说: {msg}\n\n请回应玩家的问题或指令。如果玩家要操作游戏，通过工具调用发起（自主模式规则见系统提示）。")
             }
             _ => {
                 if auto_mode {
-                    format!("{state_part}{game_knowledge_part}{notes_part}{task_part}\n\n你正处于自主模式，游戏操作 ACTION 会被执行。每轮必须给出下一步游戏操作 ACTION——这是硬性要求，不要只给文字分析。只有确认整个任务已全部完成时才输出 ACTION: auto_stop；任务未完成时绝不输出 auto_stop。")
+                    format!("{state_part}{game_knowledge_part}{notes_part}{plan_part}{task_part}\n\n你正处于自主模式，游戏操作 ACTION 会被执行。每轮必须给出下一步游戏操作 ACTION——这是硬性要求，不要只给文字分析。只有确认整个任务已全部完成时才输出 ACTION: auto_stop；任务未完成时绝不输出 auto_stop。")
                 } else {
                     format!("{state_part}{game_knowledge_part}\n\n请分析当前局面，给出行动建议。注意：不要输出 ACTION 行，只给文字建议。")
                 }

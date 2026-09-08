@@ -59,6 +59,8 @@ pub(super) fn start_decision(
             Some(&game_knowledge)
         },
         session_notes.as_deref(),
+        state.plan.as_deref(),
+        &state.recent_actions,
         zh,
     );
     state.stream_started = Some(std::time::Instant::now());
