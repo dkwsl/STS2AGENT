@@ -16,6 +16,7 @@ Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/Gennadiyev/STS2MCP/
 - **会话恢复**：`--tui --load <id>` 恢复上次会话的完整上下文继续对话（LLM 带历史记忆、用量累计接续）
 - **Token 用量与成本统计**：精确统计每次 API 调用的 token 数与费用（含缓存命中），支持预算上限自动中断
 - **知识库辅助**：`game-knowledge/` 结构化索引（577 张卡牌、121 种敌人、64 种药水、68 个事件，从游戏反编译数据生成），根据当前局面按 ID 精确查表，自动注入 LLM 上下文
+- **跨回合策略记忆**：LLM 经 `PLAN:` 行声明作战计划，内核逐轮回显 + 回显最近已执行操作——自主循环中接着上次的操作往下想，不重复思考
 - **可自定义模型配置**：支持 OpenAI / DeepSeek / 清华平台 / 本地 vLLM 等 OpenAI 兼容接口，可配置 endpoint、api_key、上下文长度、思考模式、价格等
 - **实时进度渲染与打断**：流式输出 + 按键打断，长任务不卡顿
 - **上下文历史管理**：每会话存为 JSON（对话/动作/状态快照/用量），支持列出/回放/恢复，非黑盒
@@ -27,8 +28,8 @@ Agent 通过游戏 Mod 接口（[STS2MCP](https://github.com/Gennadiyev/STS2MCP/
 │  STS2 游戏   │ ◀─────────────────────▶ │  Rust Agent                              │
 │  + STS2MCP   │                          │                                          │
 │  Mod (C#)    │                          │  ┌──────────┐  ┌──────────┐  ┌────────┐ │
-│  HTTP :15526 │                          │  │ MCP 客户 │─▶│ 决策引擎 │─▶│ LLM    │ │
-└─────────────┘                          │  │ 端+Mock  │  │ (可插拔) │  │ 客户端 │ │
+│  HTTP :15526 │                          │  │ MCP 客户 │─▶│ 知识库+  │─▶│ LLM    │ │
+└─────────────┘                          │  │ 端+Mock  │  │ 决策编排 │  │ 客户端 │ │
        ▲                                  │  └──────────┘  └──────────┘  └───┬────┘ │
        │ 演示用 Mock                       │  ┌──────────────────────────────▼───┐ │
        ▼                                  │  │ 编排层: 会话/历史/取消/进度/预算   │ │
@@ -152,9 +153,6 @@ price_out = 0.60                          # 每百万输出 token 美元
 command = "uv"                            # MCP server 启动命令
 args = ["run", "--directory", "/path/to/STS2MCP/mcp", "python", "server.py"]
 
-[decision]
-engine = "rule_based"                     # rule_based（内置）；预留 mcts / remote
-
 [budget]
 token_limit = 0                           # 0 = 不限；超出自动中断
 cost_limit_usd = 0.0                      # 0.0 = 不限
@@ -164,6 +162,18 @@ sessions_dir = "data/sessions"
 logs_dir = "data/logs"
 game_knowledge_dir = "game-knowledge"       # 结构化游戏数据索引目录
 ```
+
+### Windows 原生运行
+
+Agent 与游戏都在 Windows 上时，`[mcp]` 直接用本地 Python 跑 server.py（无需 WSL 桥接）：
+
+```toml
+[mcp]
+command = "python"
+args = ["-X", "utf8", "C:\\path\\to\\STS2MCP\\mcp\\server.py"]
+```
+
+> `-X utf8` 规避 Windows Python 默认 GBK 编码问题。Agent 与游戏分属 WSL/Windows 两端时，参考仓库根目录的 `win_server.py` 桥接方案。
 
 ### 切换 LLM 供应商
 
@@ -181,9 +191,8 @@ game_knowledge_dir = "game-knowledge"       # 结构化游戏数据索引目录
 ```
 sts2agent/
 ├─ crates/
-│  ├─ sts2-core/        # 领域模型 (GameState/Action/Config) + serde
+│  ├─ sts2-core/        # 领域模型 (GameState/Config) + serde
 │  ├─ sts2-mcp/         # MCP 客户端 + Mock MCP server (演示用)
-│  ├─ sts2-decision/    # DecisionEngine trait (可插拔，预留扩展)
 │  ├─ sts2-llm/         # OpenAI 兼容 LLM 客户端 (流式/usage/价格/预算)
 │  ├─ sts2-knowledge/   # 知识库 skill (检索/查询/Wiki 兜底) + MCP server 二进制
 │  ├─ sts2-agent/       # 编排主控 (会话/历史/取消/进度/存储)
@@ -213,7 +222,7 @@ cargo fmt                                  # 格式化
 cargo fmt --check                          # 格式校验
 cargo build --workspace                    # 构建
 cargo clippy --all-targets -- -D warnings  # 严格 lint
-cargo test --workspace                     # 测试 (29 项)
+cargo test --workspace                     # 测试
 ```
 
 每个 crate 根以 `#![forbid(unsafe_code)]` 强制禁用 unsafe。
