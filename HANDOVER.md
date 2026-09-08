@@ -31,9 +31,9 @@ WSL (Ubuntu-24.04)                          Windows
 └─────────────────────────┘
 ```
 
-- **config.toml 的 mcp command**：`powershell.exe -c "python '\\wsl.localhost\Ubuntu-24.04\home\aaa12321\sts2mcp\win_server.py'"`。win_server.py 在 `/home/aaa12321/sts2mcp/win_server.py`（仓库外），内容：读 WSL UNC 路径的 STS2MCP/mcp/server.py 并 exec。**Windows python 跑在 Windows 端，其 localhost 指向 Windows**，所以能直连游戏 Mod，无需端口转发。
+- **config.toml 的 mcp command**：`powershell.exe -c "python '\\wsl.localhost\<发行版>\home\<用户名>\sts2mcp\win_server.py'"`。win_server.py 在 `/home/<用户名>/sts2mcp/win_server.py`（仓库外），内容：读 WSL UNC 路径的 STS2MCP/mcp/server.py 并 exec。**Windows python 跑在 Windows 端，其 localhost 指向 Windows**，所以能直连游戏 Mod，无需端口转发。
 - **不要用 netsh portproxy**！上次排查 502 时发现残留 portproxy（注册表持久化）会劫持 15526 端口导致连接挂起。已删除。若再遇到 502/空响应，先查 `netsh interface portproxy show v4tov4`。
-- **游戏 Mod 必须重新编译**（游戏版本更新，上游 Release 的 DLL 不兼容）。源码在 `/home/aaa12321/sts2mcp/STS2MCP/`，`build.ps1 -GameDir "<游戏目录>"` 编译，产物拷到 `mods/`。
+- **游戏 Mod 必须重新编译**（游戏版本更新，上游 Release 的 DLL 不兼容）。源码在 `/home/<用户名>/sts2mcp/STS2MCP/`，`build.ps1 -GameDir "<游戏目录>"` 编译，产物拷到 `mods/`。
 - API key 在 `config/.env`（STS2_OPENAI_API_KEY）。config.toml 的 api_key 留空。**load_config 优先读 config/.env**（dotenvy::from_path），再回退 cwd/.env。
 - LLM：清华平台 `https://lab.cs.tsinghua.edu.cn/ai-platform/api/v1`，模型 glm-5。**对 tools（function calling）支持良好**。
 

@@ -9,7 +9,7 @@
 
 | 议题 | 结论 |
 |---|---|
-| 游戏 Mod | 采用社区项目 `STS2MCP`（本地 clone 于 `/home/aaa12321/sts2mcp/STS2MCP/`，非本仓库内容、勿提交）：C# Mod 起游戏内 HTTP API（`localhost:15526`，无鉴权），随附 Python MCP server（`mcp/server.py`，stdio）作桥。Rust Agent 作 MCP 客户端拉起该 Python server，经 MCP 工具读写状态。契约详见 §9。 |
+| 游戏 Mod | 采用社区项目 `STS2MCP`（本地 clone 于 `/home/<用户名>/sts2mcp/STS2MCP/`，非本仓库内容、勿提交）：C# Mod 起游戏内 HTTP API（`localhost:15526`，无鉴权），随附 Python MCP server（`mcp/server.py`，stdio）作桥。Rust Agent 作 MCP 客户端拉起该 Python server，经 MCP 工具读写状态。契约详见 §9。 |
 | 用户界面 | 先做 TUI（ratatui）；核心与表现分离，后续可加 Web / 桌面 / 嵌入游戏内 Mod UI。 |
 | 决策工具 | 推荐：定义 `DecisionEngine` trait + 内置规则启发式实现，可插拔替换；MCTS 等高级算法留作扩展。详见 §8。 |
 | 演示数据 | Rust 写的 Mock MCP server（与真实契约同构的脚本化战斗）+ 真实 MCP 客户端代码，无需游戏即可端到端演示。 |
@@ -96,7 +96,7 @@ sts2agent/
   ```toml
   [mcp]
   command = "uv"
-  args = ["run","--directory","/home/aaa12321/sts2mcp/STS2MCP/mcp","python","server.py"]
+  args = ["run","--directory","/home/<用户名>/sts2mcp/STS2MCP/mcp","python","server.py"]
   # server.py 可选参数：--host/--port 指向游戏 HTTP、--no-trust-env 忽略代理
   ```
   客户端实现 MCP 必要子集（`initialize` / `tools/list` / `tools/call`，stdio JSON-RPC）。先评估现有 Rust MCP SDK；不合用则手写该子集（约 3 个方法，成本低）。核心只需：`get_game_state(format="json")` 取状态，再按 `state_type` 调对应动作工具（见 §9）。

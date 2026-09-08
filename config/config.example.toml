@@ -13,7 +13,7 @@ price_out = 0.60  # 每百万输出 token 美元
 [mcp]
 # 真实 STS2MCP：stdio 拉起 Python MCP server，转发游戏 Mod 的 HTTP API(localhost:15526)
 command = "uv"
-args = ["run", "--directory", "/home/aaa12321/sts2mcp/STS2MCP/mcp", "python", "server.py"]
+args = ["run", "--directory", "/home/<你的用户名>/sts2mcp/STS2MCP/mcp", "python", "server.py"]
 # 演示用 Mock（待实现后切换）：command = "sts2-mcp-mock"
 
 [decision]
