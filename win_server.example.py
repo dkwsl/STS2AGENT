@@ -3,7 +3,7 @@ import os
 import sys
 
 # WSL UNC path to the mcp directory
-mcp_dir = r"\\wsl.localhost\Ubuntu-24.04\home\aaa12321\STS2MCP\mcp"
+mcp_dir = r"\\wsl.localhost\Ubuntu-24.04\path\STS2MCP\mcp"
 
 # Read server.py with UTF-8 (Windows default is GBK, would crash)
 server_path = os.path.join(mcp_dir, "server.py")
