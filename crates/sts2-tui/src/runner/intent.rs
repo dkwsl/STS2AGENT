@@ -75,7 +75,9 @@ async fn refresh_and_decide(
     let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
     state.last_state_json = sj.clone();
     state.game_state = gs.clone();
-    start_decision(&gs, &sj, config, llm, bt_tx, history, user_msg, zh, state);
+    start_decision(
+        &gs, mcp, &sj, config, llm, bt_tx, history, user_msg, zh, state,
+    );
     Ok(())
 }
 

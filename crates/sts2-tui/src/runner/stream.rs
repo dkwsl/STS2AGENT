@@ -1,6 +1,8 @@
 //! LLM 流生命周期：发起决策、消费流、打断、后台状态轮询。
 
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use sts2_mcp::McpClient;
+use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use sts2_agent::decide;
@@ -15,6 +17,7 @@ use super::Backend;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start_decision(
     gs: &GameState,
+    mcp: &Arc<Mutex<McpClient>>,
     state_json: &str,
     config: &Config,
     llm: &LlmClient,
@@ -91,6 +94,7 @@ pub(super) fn start_decision(
         )
     };
     state.stream_started = Some(std::time::Instant::now());
+    spawn_stream_watchdog(mcp, state, bt_tx);
     match llm.chat_stream(&messages, Some(decide::tool_definitions())) {
         Ok(rx) => {
             let bt_tx2 = bt_tx.clone();
@@ -105,6 +109,41 @@ pub(super) fn start_decision(
             state.push_chat(MsgRole::System, format!("LLM 启动失败: {e:#}"));
         }
     }
+}
+
+/// LLM 流式期间的状态监听：每 0.8s GET 一次与决策快照比对，
+/// 局面变化（用户手动操作）立即通知主循环打断当前流并重开决策。
+/// 流结束（streaming_flag=false）后 watcher 自行退出——非流式期间零 GET，
+/// 不触发 Mod 在 shop 状态的 OpenInventory 副作用。
+pub(super) fn spawn_stream_watchdog(
+    mcp: &Arc<Mutex<McpClient>>,
+    state: &AppState,
+    bt_tx: &mpsc::UnboundedSender<Backend>,
+) {
+    use std::sync::atomic::Ordering;
+    let mcp2 = mcp.clone();
+    let bt_tx2 = bt_tx.clone();
+    let flag = state.streaming_flag.clone();
+    let snapshot = state.decision_state_json.clone();
+    flag.store(true, Ordering::Relaxed);
+    tokio::spawn(async move {
+        while flag.load(Ordering::Relaxed) {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            if !flag.load(Ordering::Relaxed) {
+                break;
+            }
+            let sj = {
+                let mut m = mcp2.lock().await;
+                m.get_game_state("json").await.unwrap_or_default()
+            };
+            if sj.is_empty() || sj == snapshot {
+                continue;
+            }
+            let _ = bt_tx2.send(Backend::StateChange(sj));
+            break;
+        }
+        flag.store(false, Ordering::Relaxed);
+    });
 }
 
 /// 打断当前 LLM 流：cancel + 排空 stale 消息 + 固化思考（浅色保留）+ 清空流式文本。

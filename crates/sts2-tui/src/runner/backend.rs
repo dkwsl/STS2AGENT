@@ -131,6 +131,37 @@ pub(super) async fn handle_backend_msg(
             )
             .await;
         }
+        Backend::StateChange(sj) => {
+            // 流式期间的状态监听：局面变化（用户手动操作）→ 立即打断当前流
+            if sj == state.last_state_json {
+                return false;
+            }
+            state.last_state_json = sj.clone();
+            let gs: GameState = serde_json::from_str(&sj).unwrap_or_default();
+            state.game_state = gs.clone();
+            if !matches!(*mode, Mode::Streaming) {
+                return false; // 非流式期间的变化不打断（避免干扰执行/待确认流程）
+            }
+            stream::abort_current_llm(state, bt_rx, full_text);
+            state.push_chat(
+                MsgRole::System,
+                "⚠️ 局面已变化，当前思考中止，重新分析。".into(),
+            );
+            if state.auto_mode
+                && !matches!(
+                    gs.state_type,
+                    StateType::Unknown | StateType::GameOver | StateType::Overlay
+                )
+            {
+                // 自主模式：重置链（旧链基于旧局面），立即用新局面重开
+                state.auto_messages.clear();
+                state.plan = None;
+                stream::start_decision(&gs, mcp, &sj, config, llm, bt_tx, history, None, zh, state);
+            } else {
+                *mode = Mode::Idle;
+                state.progress = None;
+            }
+        }
         Backend::Error(e) => {
             state.push_chat(MsgRole::System, e);
             *mode = Mode::Idle;
@@ -193,6 +224,7 @@ pub(super) fn trim_auto_chain(state: &mut AppState) {
 pub(super) fn continue_auto_stream(
     state: &mut AppState,
     config: &Config,
+    mcp: &Arc<Mutex<McpClient>>,
     bt_tx: &mpsc::UnboundedSender<Backend>,
 ) {
     // 链截断保护：不切断 assistant(tool_calls) ↔ tool 配对
@@ -201,6 +233,7 @@ pub(super) fn continue_auto_stream(
     state.current_cancel = cancel.clone();
     let llm2 = LlmClient::from_config(&config.model);
     state.stream_started = Some(std::time::Instant::now());
+    stream::spawn_stream_watchdog(mcp, state, bt_tx);
     match llm2.chat_stream(
         &state.auto_messages.clone(),
         Some(decide::tool_definitions()),
@@ -370,7 +403,7 @@ async fn on_stream_done(
                     .push(sts2_llm::ChatMessage::tool(call_id, content));
                 *mode = Mode::Streaming;
                 state.progress = Some("结合查询结果分析…".into());
-                continue_auto_stream(state, config, bt_tx);
+                continue_auto_stream(state, config, mcp, bt_tx);
                 return;
             }
             *mode = Mode::Streaming;
@@ -393,6 +426,7 @@ async fn on_stream_done(
             };
             stream::start_decision(
                 &gs,
+                mcp,
                 &sj,
                 config,
                 llm,
@@ -519,7 +553,7 @@ async fn on_stream_done(
                 pending_actions.clear();
                 *mode = Mode::Streaming;
                 state.progress = Some("继续分析…".into());
-                continue_auto_stream(state, config, bt_tx);
+                continue_auto_stream(state, config, mcp, bt_tx);
                 return;
             }
         } else {
@@ -809,5 +843,5 @@ async fn on_state_ready(
     *mode = Mode::Streaming;
     state.progress = Some("分析中…".into());
     full_text.clear();
-    continue_auto_stream(state, config, bt_tx);
+    continue_auto_stream(state, config, mcp, bt_tx);
 }

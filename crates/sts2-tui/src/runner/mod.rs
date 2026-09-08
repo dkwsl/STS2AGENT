@@ -45,6 +45,7 @@ use stream::abort_current_llm;
 /// 后台任务 → 主循环的消息。
 enum Backend {
     StateReady(String),
+    StateChange(String),
     Delta(String),
     Reasoning(String),
     Usage(Usage),
