@@ -58,9 +58,9 @@ R6. Token 用量与价格统计
 
 ### 3.1 STS2MCP（游戏接口来源）
 
-- 本项目不自带游戏 Mod，采用社区项目 STS2MCP。本地 clone 位于 `/home/aaa12321/sts2mcp/STS2MCP/`（在主目录内、本仓库外；勿将其内容提交到本仓库）。
+- 本项目不自带游戏 Mod，采用社区项目 STS2MCP。本地 clone 位于 `/home/<用户名>/sts2mcp/STS2MCP/`（在主目录内、本仓库外；勿将其内容提交到本仓库）。
 - 拓扑：游戏内 C# Mod 起 HTTP API `http://localhost:15526`（无鉴权、仅本地）；随附 Python MCP server（`mcp/server.py`，FastMCP + stdio）作桥；Rust Agent 作 MCP 客户端，以 stdio 拉起该 Python server，经 MCP 工具读写状态。这满足 §1.2「通过 MCP 协议与游戏交互」。
-- 启动命令（写入配置 `mcp.command` / `mcp.args`）：`uv run --directory /home/aaa12321/sts2mcp/STS2MCP/mcp python server.py`。
+- 启动命令（写入配置 `mcp.command` / `mcp.args`）：`uv run --directory /home/<用户名>/sts2mcp/STS2MCP/mcp python server.py`。
 - 完整接口契约（工具清单 + 状态 JSON schema + 动作规则）见 `PLAN.md` §9。上游权威来源：`STS2MCP/mcp/server.py`、`STS2MCP/docs/raw-full.md`、`STS2MCP/docs/raw-simplified.md`、`STS2MCP/mcp/README.md`。
 - 开发/演示阶段用 Rust 写的 Mock MCP server（与真实契约同构）；真实联调才需本机运行游戏并装 `STS2_MCP` Mod（非阻塞当前开发）。
 
