@@ -194,7 +194,12 @@ pub(super) fn continue_auto_stream(
     state: &mut AppState,
     config: &Config,
     bt_tx: &mpsc::UnboundedSender<Backend>,
+    decision_state_json: &str,
 ) {
+    // 刷新决策快照：stale 校验以本轮发链时的状态为基准。
+    // 链式续发不经过 start_decision，若不刷新，校验会拿旧快照永远误判
+    // "状态已变化"→ 丢弃输出 → stabilize → 再判再败 → 自主循环死循环。
+    state.decision_state_json = decision_state_json.to_string();
     // 链截断保护：不切断 assistant(tool_calls) ↔ tool 配对
     trim_auto_chain(state);
     let cancel = CancellationToken::new();
@@ -370,7 +375,12 @@ async fn on_stream_done(
                     .push(sts2_llm::ChatMessage::tool(call_id, content));
                 *mode = Mode::Streaming;
                 state.progress = Some("结合查询结果分析…".into());
-                continue_auto_stream(state, config, bt_tx);
+                // lookup 不改游戏状态，但为让 stale 校验基准最新，重取一次快照
+                let sj = match mcp.lock().await.get_game_state("json").await {
+                    Ok(s) if !s.is_empty() => s,
+                    _ => state.decision_state_json.clone(),
+                };
+                continue_auto_stream(state, config, bt_tx, &sj);
                 return;
             }
             *mode = Mode::Streaming;
@@ -514,12 +524,13 @@ async fn on_stream_done(
                 state.progress = None;
             } else {
                 let nudge = "（系统）自主模式仍在进行。请直接给出下一步游戏操作工具调用；仅当任务已全部完成时才调用 auto_stop。";
+                let sj = state.last_state_json.clone();
                 state.auto_messages.push(sts2_llm::ChatMessage::user(nudge));
                 full_text.clear();
                 pending_actions.clear();
                 *mode = Mode::Streaming;
                 state.progress = Some("继续分析…".into());
-                continue_auto_stream(state, config, bt_tx);
+                continue_auto_stream(state, config, bt_tx, &sj);
                 return;
             }
         } else {
@@ -809,5 +820,5 @@ async fn on_state_ready(
     *mode = Mode::Streaming;
     state.progress = Some("分析中…".into());
     full_text.clear();
-    continue_auto_stream(state, config, bt_tx);
+    continue_auto_stream(state, config, bt_tx, &sj);
 }
